@@ -72,8 +72,13 @@ def drop_offload_state_arg(model) -> None:
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
-    def __init__(self, checkpoint: Path, max_num_objects: int = 48, detect_batch: int = 4):
+    def __init__(self, checkpoint: Path, max_num_objects: int = 48, detect_batch: int | None = None):
+        import torch
         from sam3.model_builder import build_sam3_multiplex_video_predictor
+
+        if detect_batch is None:
+            # Meta's 16-frame detection batches on a big card; 4 on a 24 GB one.
+            detect_batch = 16 if torch.cuda.get_device_properties(0).total_memory >= 40e9 else 4
 
         self.predictor = build_sam3_multiplex_video_predictor(
             checkpoint_path=str(checkpoint),
