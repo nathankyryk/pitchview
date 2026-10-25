@@ -3,7 +3,15 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from pitchview.gsr import list_clips
-from pitchview.segment import GroundTruthTracks, MaskWriter, attach_masks, box_iou, mask_features, write_tracks
+from pitchview.segment import (
+    GroundTruthTracks,
+    MaskWriter,
+    attach_masks,
+    box_iou,
+    drop_offload_state_arg,
+    mask_features,
+    write_tracks,
+)
 
 
 def test_mask_features_rectangle():
@@ -90,3 +98,17 @@ def test_mask_writer_round_trips_rle(gsr_root, tmp_path):
     player = next(r for r in rows if r["frame"] == 1 and r["obj_id"] == 11)
     decoded = mask_utils.decode({"size": player["size"], "counts": player["counts"].encode()})
     assert decoded.shape == (36, 64) and decoded.sum() == 8 * 20  # the 8x20 player box
+
+
+def test_sam_session_start_survives_the_extra_argument():
+    class Model:  # SAM 3.1's init_state: no offload_state_to_cpu parameter
+        def init_state(self, resource_path, offload_video_to_cpu=False, async_loading_frames=False):
+            return {"path": resource_path, "offload_video": offload_video_to_cpu}
+
+    model = Model()
+    drop_offload_state_arg(model)
+    # what sam3's shared start_session sends
+    state = model.init_state(
+        resource_path="frames/", offload_video_to_cpu=True, offload_state_to_cpu=False, async_loading_frames=True
+    )
+    assert state == {"path": "frames/", "offload_video": True}

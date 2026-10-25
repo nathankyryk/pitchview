@@ -125,7 +125,9 @@ train_steps() {
 
 infer_steps() {
   run "detect: test" uv run pitchview detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
-  run "detect: valid" uv run pitchview detect --split valid --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+  # valid: only the 5 tuning clips, like keypoints and SAM
+  run "detect: valid x5" uv run pitchview detect --split valid --limit 5 --size "$DETECTOR_SIZE" \
+    --resolution "$DETECTOR_RES"
   run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
   run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
   run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
@@ -170,5 +172,11 @@ case "$stage" in
     ;;
   train) train_steps ;;
   infer) infer_steps ;;
-  all) train_steps; infer_steps ;;
+  all)
+    train_steps
+    # Pick up fixes pushed while training ran.
+    run "update code" git pull --ff-only
+    run "sync environment" uv sync --frozen
+    infer_steps
+    ;;
 esac

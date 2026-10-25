@@ -57,6 +57,18 @@ def mask_features(mask: np.ndarray) -> tuple[float, float, float, float, float, 
     return float(xs.min()), float(top), float(xs.max() + 1), float(bottom + 1), foot_x, float(bottom + 1), int(ys.size)
 
 
+def drop_offload_state_arg(model) -> None:
+    """Work around a mismatch in sam3 (commit 7f473cfd): the shared start_session always
+    passes offload_state_to_cpu, but the SAM 3.1 multiplex model's init_state doesn't take
+    it, so every session crashes on start. Accept the argument and drop it."""
+    init_state = model.init_state
+
+    def init_state_compat(*args, offload_state_to_cpu=False, **kwargs):
+        return init_state(*args, **kwargs)
+
+    model.init_state = init_state_compat
+
+
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
@@ -68,6 +80,7 @@ class Sam31:
             max_num_objects=max_num_objects,  # the default (16) is below a busy frame's head count
             use_fa3=False,  # FlashAttention 3 needs Hopper (H100); the RTX 4090 is Ada
         )
+        drop_offload_state_arg(self.predictor.model)
 
     def track(
         self, clip: Clip, prompt: str = "person", prob_thresh: float = 0.5, max_frames: int | None = None
