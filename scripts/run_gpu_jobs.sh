@@ -3,10 +3,11 @@
 #
 #   bash scripts/run_gpu_jobs.sh check   # attended, ~30 min: 1-clip test of every job + timing runs
 #   bash scripts/run_gpu_jobs.sh train   # unattended, ~4.75 h; the pod stops itself at the end
-#   bash scripts/run_gpu_jobs.sh infer   # unattended, ~3.25 h; the pod stops itself at the end
-#   bash scripts/run_gpu_jobs.sh all     # unattended, ~8 h: train, then infer, then the pod stops
+#   bash scripts/run_gpu_jobs.sh infer   # unattended: detection, pitch keypoints, jerseys (ByteTrack)
+#   bash scripts/run_gpu_jobs.sh all     # unattended, on the 4090: train, then infer, then the pod stops
+#   bash scripts/run_gpu_jobs.sh sam     # unattended, on a 48 GB+ card: SAM 3.1 masks and tracks
 #
-# train, infer and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
+# train, infer, sam and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
 # job never bills overnight. Every step is timed; a failed step doesn't stop the others.
 # Logs and outputs live on the volume: /workspace/logs and /workspace/pitchview/outputs.
@@ -20,8 +21,8 @@ set -euo pipefail
 
 stage="${1:-}"
 case "$stage" in
-  check | train | infer | all) ;;
-  *) echo "usage: $0 check|train|infer|all" >&2; exit 2 ;;
+  check | train | infer | sam | all) ;;
+  *) echo "usage: $0 check|train|infer|sam|all" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/pod_env.sh
@@ -131,11 +132,16 @@ infer_steps() {
   run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
   run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
   run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
+  run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
+}
+
+# SAM 3.1 keeps every past frame in GPU memory (~27 MB a frame), so a 750-frame clip needs
+# ~40 GB: it runs as its own stage on a 48 GB+ card, alongside training on the 4090.
+sam_steps() {
   # Masks can't be remade once the volume is gone, so keep every one (RLE, ~10 MB a clip):
   # the viewer can then show and toggle each player's mask on any test clip.
   run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
   run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
-  run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
   run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
 }
 
@@ -172,6 +178,7 @@ case "$stage" in
     ;;
   train) train_steps ;;
   infer) infer_steps ;;
+  sam) sam_steps ;;
   all)
     train_steps
     # Pick up fixes pushed while training ran.

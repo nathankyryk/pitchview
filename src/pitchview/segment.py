@@ -69,20 +69,6 @@ def drop_offload_state_arg(model) -> None:
     model.init_state = init_state_compat
 
 
-def keep_recent_memory_on_gpu(model) -> int:
-    """Turn on the tracker's long-video options, which the SAM 3.1 demo config switches off:
-    drop the memory features of frames older than the attention window, and keep past outputs
-    in CPU RAM. Without them GPU memory grows ~27 MB a frame and a 750-frame clip runs out of
-    the RTX 4090's 24 GB (at frame 429). Returns how many tracker modules were changed."""
-    changed = 0
-    for module in model.modules():
-        if hasattr(module, "trim_past_non_cond_mem_for_eval") and hasattr(module, "offload_output_to_cpu_for_eval"):
-            module.trim_past_non_cond_mem_for_eval = True
-            module.offload_output_to_cpu_for_eval = True
-            changed += 1
-    return changed
-
-
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
@@ -98,7 +84,6 @@ class Sam31:
         # The builder detects 16 frames per batch, sized for an 80 GB card: on the 24 GB
         # RTX 4090 the second batch ran out of memory while the first was still cached.
         self.predictor.model.batched_grounding_batch_size = detect_batch
-        keep_recent_memory_on_gpu(self.predictor.model)
 
     def track(
         self, clip: Clip, prompt: str = "person", prob_thresh: float = 0.5, max_frames: int | None = None
