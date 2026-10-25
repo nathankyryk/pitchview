@@ -72,7 +72,7 @@ def drop_offload_state_arg(model) -> None:
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
-    def __init__(self, checkpoint: Path, max_num_objects: int = 48):
+    def __init__(self, checkpoint: Path, max_num_objects: int = 48, detect_batch: int = 4):
         from sam3.model_builder import build_sam3_multiplex_video_predictor
 
         self.predictor = build_sam3_multiplex_video_predictor(
@@ -81,6 +81,9 @@ class Sam31:
             use_fa3=False,  # FlashAttention 3 needs Hopper (H100); the RTX 4090 is Ada
         )
         drop_offload_state_arg(self.predictor.model)
+        # The builder detects 16 frames per batch, sized for an 80 GB card: on the 24 GB
+        # RTX 4090 the second batch ran out of memory while the first was still cached.
+        self.predictor.model.batched_grounding_batch_size = detect_batch
 
     def track(
         self, clip: Clip, prompt: str = "person", prob_thresh: float = 0.5, max_frames: int | None = None

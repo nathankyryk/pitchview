@@ -25,3 +25,6 @@ export TORCH_HOME="$WORKSPACE/.cache/torch"       # PARSeq, torchvision weights
 export YOLO_CONFIG_DIR="$WORKSPACE/.cache/ultralytics"
 
 export PATH="$UV_INSTALL_DIR:$PATH"
+
+# Less GPU memory lost to fragmentation (SAM 3.1's batches of large tensors need it).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
