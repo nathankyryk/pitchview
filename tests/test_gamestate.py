@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from pitchstate.gamestate import Variant, assemble, ball_positions, to_predictions
+from pitchview.gamestate import Variant, assemble, ball_positions, to_predictions
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
 H = np.array([[0.1, 0, -50], [0, 0.1, -30], [0, 0, 1]], dtype=float)

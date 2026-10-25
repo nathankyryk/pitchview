@@ -1,6 +1,6 @@
 import pandas as pd
 
-from pitchstate.track import bytetrack
+from pitchview.track import bytetrack
 
 
 def _box(frame, x1, y1, w, h, class_name):

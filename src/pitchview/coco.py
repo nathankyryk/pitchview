@@ -13,7 +13,7 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-from pitchstate.gsr import Box, list_clips
+from pitchview.gsr import Box, list_clips
 
 # Same layout as a Roboflow COCO export: an unannotated parent category (id 0)
 # plus the real classes. RF-DETR drops the parent and maps ids 1-4 to labels 0-3.

@@ -12,7 +12,7 @@ if [ -z "${RUNPOD_POD_ID:-}" ] && [ -f /etc/rp_environment ]; then
 fi
 
 export WORKSPACE="${WORKSPACE:-/workspace}"
-export REPO_DIR="$WORKSPACE/pitchstate"
+export REPO_DIR="$WORKSPACE/pitchview"
 export LOG_DIR="$WORKSPACE/logs"
 
 export UV_INSTALL_DIR="$WORKSPACE/.cache/uv-bin"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pitchstate.gsr import Clip
+from pitchview.gsr import Clip
 
 BENCHMARK = "SoccerNetGS"
 

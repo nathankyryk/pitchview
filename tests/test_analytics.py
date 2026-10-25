@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pitchstate.analytics import player_stats, possession, summarise, team_shape
+from pitchview.analytics import player_stats, possession, summarise, team_shape
 
 
 def _row(frame, track, x, y, team="left", role="player", jersey="7"):

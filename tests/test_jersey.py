@@ -1,4 +1,4 @@
-from pitchstate.jersey import parse_number, shirt_region, vote
+from pitchview.jersey import parse_number, shirt_region, vote
 
 
 def test_shirt_region():

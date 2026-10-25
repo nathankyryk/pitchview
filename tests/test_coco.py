@@ -1,6 +1,6 @@
 import json
 
-from pitchstate.coco import CATEGORIES, convert_split
+from pitchview.coco import CATEGORIES, convert_split
 
 
 def test_convert_every_frame(gsr_root, tmp_path):

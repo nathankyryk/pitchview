@@ -19,7 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.optimize import linear_sum_assignment
 
-from pitchstate.gsr import Clip
+from pitchview.gsr import Clip
 
 # SAM's per-frame output: out_obj_ids (N,), out_probs (N,), out_binary_masks (N, H, W) bool
 FrameOutput = dict

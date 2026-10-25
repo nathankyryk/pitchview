@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from pitchstate.gsr import list_clips
-from pitchstate.segment import GroundTruthTracks, MaskWriter, attach_masks, box_iou, mask_features, write_tracks
+from pitchview.gsr import list_clips
+from pitchview.segment import GroundTruthTracks, MaskWriter, attach_masks, box_iou, mask_features, write_tracks
 
 
 def test_mask_features_rectangle():

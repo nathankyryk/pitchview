@@ -1,6 +1,6 @@
 import pytest
 
-from pitchstate.gsr import list_clips
+from pitchview.gsr import list_clips
 
 
 def test_list_clips_reads_frames_and_boxes(gsr_root):

@@ -18,7 +18,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from pitchstate.gsr import Clip
+from pitchview.gsr import Clip
 
 LENGTH, WIDTH = 105.0, 68.0
 PENALTY_BOX_LENGTH, PENALTY_BOX_WIDTH = 16.5, 40.32

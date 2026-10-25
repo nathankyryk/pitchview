@@ -1,6 +1,6 @@
 import numpy as np
 
-from pitchstate.teams import GREY, cluster_teams, jersey_crop, name_sides
+from pitchview.teams import GREY, cluster_teams, jersey_crop, name_sides
 
 
 def test_jersey_crop_takes_shirt_band_and_greys_background():

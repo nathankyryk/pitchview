@@ -1,4 +1,4 @@
-"""`pitchstate` command line. Every GPU stage has a --smoke mode that runs on a laptop CPU.
+"""`pitchview` command line. Every GPU stage has a --smoke mode that runs on a laptop CPU.
 
 --smoke uses 2 clips x 10 frames, tiny model settings, and ground-truth stand-ins where the
 real step needs CUDA (SAM 3.1), so wiring bugs show up locally instead of on a paid pod.
@@ -17,10 +17,10 @@ import pandas as pd
 import pyarrow.parquet as pq
 import typer
 
-from pitchstate.gsr import DEFAULT_ROOT, list_clips
+from pitchview.gsr import DEFAULT_ROOT, list_clips
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
-OUT = Path(os.environ.get("PITCHSTATE_OUT", "outputs"))  # the pod's check stage writes to outputs/check
+OUT = Path(os.environ.get("PITCHVIEW_OUT", "outputs"))  # the pod's check stage writes to outputs/check
 WEIGHTS = Path("weights")
 SAM_WEIGHTS = WEIGHTS / "sam3.1_multiplex.pt"
 PITCH_BASE = WEIGHTS / "football-pitch-detection.pt"
@@ -70,9 +70,19 @@ def doctor() -> None:
         check("sam3 package", True, "importable")
     except ImportError:
         check("sam3 package", False, "Linux pod only", critical=cuda)
-    free_gb = shutil.disk_usage(".").free / 1e9
-    check("disk", free_gb > 20, f"{free_gb:.0f} GB free")
+    # On the pod the frames sit on local disk and outputs on the network volume: check both.
+    data_gb, out_gb = _free_gb(DEFAULT_ROOT), _free_gb(OUT)
+    check("disk (data)", data_gb > 5, f"{data_gb:.0f} GB free at {DEFAULT_ROOT.resolve()}", critical=False)
+    check("disk (outputs)", out_gb > 20, f"{out_gb:.0f} GB free at {OUT.resolve()}")
     raise typer.Exit(1 if failures else 0)
+
+
+def _free_gb(path: Path) -> float:
+    """Free space on the disk holding `path` (or its nearest existing parent)."""
+    path = path.resolve()
+    while not path.exists():
+        path = path.parent
+    return shutil.disk_usage(path).free / 1e9
 
 
 @app.command("train-detector")
@@ -81,8 +91,8 @@ def train_detector(
     batch_size: int = 4, grad_accum: int = 4, workers: int = 8,
 ) -> None:  # fmt: skip
     """Fine-tune RF-DETR on GSR (converted to COCO, every 5th frame)."""
-    from pitchstate.coco import convert_split, make_subset
-    from pitchstate.detect import TrainSettings, train
+    from pitchview.coco import convert_split, make_subset
+    from pitchview.detect import TrainSettings, train
 
     out = _out(smoke)
     full = Path("data/rfdetr_gsr")
@@ -105,7 +115,7 @@ def train_detector(
 @app.command("train-pitch")
 def train_pitch(smoke: bool = False, epochs: int = 20, imgsz: int = 640, batch: int = 16, workers: int = 8) -> None:
     """Fine-tune the pitch-keypoint model on frames auto-labelled from GSR."""
-    from pitchstate.pitch_train import finetune, write_yolo_pose_dataset
+    from pitchview.pitch_train import finetune, write_yolo_pose_dataset
 
     out = _out(smoke)
     strides, cap = ({"train": 50, "valid": 150}, 8) if smoke else ({"train": 5, "valid": 25}, None)
@@ -148,7 +158,7 @@ def detect(split: str = "test", smoke: bool = False, size: str = "medium", resol
 
     import torch
 
-    from pitchstate.detect import load, predict_clip
+    from pitchview.detect import load, predict_clip
 
     if smoke:
         size, resolution = "nano", 384
@@ -169,8 +179,8 @@ def sam(split: str = "test", smoke: bool = False, limit: int | None = None, prom
     --demo N also keeps every mask of the first N clips (RLE), for the demo video."""
     import time
 
-    from pitchstate.segment import GroundTruthTracks, MaskWriter, Sam31, write_tracks
-    from pitchstate.teams import Embedder, EmbeddingCollector
+    from pitchview.segment import GroundTruthTracks, MaskWriter, Sam31, write_tracks
+    from pitchview.teams import Embedder, EmbeddingCollector
 
     out = _out(smoke)
     tracker = GroundTruthTracks() if smoke else Sam31(SAM_WEIGHTS)
@@ -200,7 +210,7 @@ def sam(split: str = "test", smoke: bool = False, limit: int | None = None, prom
 def keypoints(split: str = "test", smoke: bool = False, weights: Path | None = None, tag: str = "finetuned",
               limit: int | None = None) -> None:  # fmt: skip
     """Pitch keypoints for every frame. --tag offtheshelf with Roboflow's weights for the ablation."""
-    from pitchstate.pitch import PitchModel, write_keypoints
+    from pitchview.pitch import PitchModel, write_keypoints
 
     out = _out(smoke)
     w = weights or (PITCH_BASE if tag == "offtheshelf" else out / "pitch_model" / "weights" / "best.pt")
@@ -219,7 +229,7 @@ def _detections(out: Path, split: str, clip, dets: str) -> pd.DataFrame:
 
 def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFrame:
     """The tracks jersey reading looks at: ByteTrack on detections, or SAM's own."""
-    from pitchstate.track import bytetrack
+    from pitchview.track import bytetrack
 
     if tracker == "sam":
         return pq.read_table(out / "sam" / split / f"{clip.name}.parquet").to_pandas().rename(columns={"obj_id": "track_id"})
@@ -233,7 +243,7 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
     """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s)."""
     from PIL import Image
 
-    from pitchstate.jersey import JerseyReader, shirt_region, vote
+    from pitchview.jersey import JerseyReader, shirt_region, vote
 
     out = _out(smoke)
     if smoke:
@@ -265,10 +275,10 @@ def assemble(
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors."""
-    from pitchstate.evaluate import image_ids, write_predictions
-    from pitchstate.gamestate import Variant, ball_positions, to_predictions
-    from pitchstate.gamestate import assemble as build
-    from pitchstate.pitch import frame_homographies, oracle_homography
+    from pitchview.evaluate import image_ids, write_predictions
+    from pitchview.gamestate import Variant, ball_positions, to_predictions
+    from pitchview.gamestate import assemble as build
+    from pitchview.pitch import frame_homographies, oracle_homography
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth)
@@ -297,7 +307,7 @@ def assemble(
 @app.command()
 def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: int | None = None) -> None:
     """Match analytics per clip (possession, speeds, team shape) as JSON, for the demo."""
-    from pitchstate.analytics import summarise
+    from pitchview.analytics import summarise
 
     out = _out(smoke)
     for clip in _clips(split, smoke, limit):
@@ -315,7 +325,7 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
 @app.command("eval")
 def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: int | None = None) -> None:
     """GS-HOTA for each named run, plus tracking-only HOTA (role, team and jersey checks off)."""
-    from pitchstate.evaluate import gs_hota
+    from pitchview.evaluate import gs_hota
 
     out = _out(smoke)
     clips = [c.name for c in _clips(split, smoke, limit)]

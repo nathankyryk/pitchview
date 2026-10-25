@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
 
-from pitchstate.gsr import Box
-from pitchstate.pitch import PITCH_KEYPOINTS, fit_homography, keypoint_labels, oracle_homography, to_image, to_pitch
+from pitchview.gsr import Box
+from pitchview.pitch import PITCH_KEYPOINTS, fit_homography, keypoint_labels, oracle_homography, to_image, to_pitch
 
 # A plausible broadcast camera: pitch metres -> 1920x1080 image pixels.
 PITCH_CORNERS = np.array([[-52.5, -34], [52.5, -34], [52.5, 34], [-52.5, 34]], dtype=np.float64)

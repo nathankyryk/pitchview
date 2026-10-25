@@ -8,7 +8,7 @@
 # train and infer re-launch themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
 # job never bills overnight. Every step is timed; a failed step doesn't stop the others.
-# Logs and outputs live on the volume: /workspace/logs and /workspace/pitchstate/outputs.
+# Logs and outputs live on the volume: /workspace/logs and /workspace/pitchview/outputs.
 #
 # Settings (environment variables):
 #   DETECTOR_SIZE=medium DETECTOR_RES=1120 DETECTOR_BATCH=4 DETECTOR_ACCUM=4 DETECTOR_EPOCHS=20
@@ -120,17 +120,17 @@ run "sync environment" uv sync --frozen
 case "$stage" in
   check)
     # Separate output folder: these 1-epoch / 1-clip results must never look like finished work.
-    export PITCHSTATE_OUT=outputs/check
-    run "doctor" uv run pitchstate doctor
+    export PITCHVIEW_OUT=outputs/check
+    run "doctor" uv run pitchview doctor
     run "pod can stop itself" can_stop_self
-    run "detector timing: 1 epoch" uv run pitchstate train-detector --epochs 1 --size "$DETECTOR_SIZE" \
+    run "detector timing: 1 epoch" uv run pitchview train-detector --epochs 1 --size "$DETECTOR_SIZE" \
       --resolution "$DETECTOR_RES" --batch-size "$DETECTOR_BATCH" --grad-accum "$DETECTOR_ACCUM"
-    run "detect: 1 clip" uv run pitchstate detect --split valid --limit 1 --size "$DETECTOR_SIZE" \
+    run "detect: 1 clip" uv run pitchview detect --split valid --limit 1 --size "$DETECTOR_SIZE" \
       --resolution "$DETECTOR_RES"
-    run "SAM 3.1: 1 clip" uv run pitchstate sam --split valid --limit 1 --demo 1
-    run "keypoints: 1 clip" uv run pitchstate keypoints --split valid --limit 1 --tag offtheshelf
-    run "pitch timing: 1 epoch" uv run pitchstate train-pitch --epochs 1
-    run "jerseys: 1 clip" uv run pitchstate jerseys --split valid --limit 1
+    run "SAM 3.1: 1 clip" uv run pitchview sam --split valid --limit 1 --demo 1
+    run "keypoints: 1 clip" uv run pitchview keypoints --split valid --limit 1 --tag offtheshelf
+    run "pitch timing: 1 epoch" uv run pitchview train-pitch --epochs 1
+    run "jerseys: 1 clip" uv run pitchview jerseys --split valid --limit 1
 
     epoch=$(seconds_of "detector timing")
     sam_clip=$(seconds_of "SAM 3.1: 1 clip")
@@ -146,19 +146,19 @@ case "$stage" in
     printf '\nIf everything above is ok:  DETECTOR_EPOCHS=<n> bash scripts/run_gpu_jobs.sh train\n'
     ;;
   train)
-    run "train detector ($DETECTOR_EPOCHS epochs)" uv run pitchstate train-detector --epochs "$DETECTOR_EPOCHS" \
+    run "train detector ($DETECTOR_EPOCHS epochs)" uv run pitchview train-detector --epochs "$DETECTOR_EPOCHS" \
       --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES" --batch-size "$DETECTOR_BATCH" --grad-accum "$DETECTOR_ACCUM"
-    run "train pitch model ($PITCH_EPOCHS epochs)" uv run pitchstate train-pitch --epochs "$PITCH_EPOCHS"
+    run "train pitch model ($PITCH_EPOCHS epochs)" uv run pitchview train-pitch --epochs "$PITCH_EPOCHS"
     ;;
   infer)
-    run "detect: test" uv run pitchstate detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
-    run "detect: valid" uv run pitchstate detect --split valid --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
-    run "keypoints: test (fine-tuned)" uv run pitchstate keypoints --split test
-    run "keypoints: test (off-the-shelf)" uv run pitchstate keypoints --split test --tag offtheshelf
-    run "keypoints: valid x5 (fine-tuned)" uv run pitchstate keypoints --split valid --limit 5
-    run "SAM 3.1: test (+5 demo clips)" uv run pitchstate sam --split test --demo 5
-    run "SAM 3.1: valid x5" uv run pitchstate sam --split valid --limit 5
-    run "jerseys: test, ByteTrack tracks" uv run pitchstate jerseys --split test
-    run "jerseys: test, SAM tracks" uv run pitchstate jerseys --split test --tracker sam
+    run "detect: test" uv run pitchview detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+    run "detect: valid" uv run pitchview detect --split valid --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+    run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
+    run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
+    run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
+    run "SAM 3.1: test (+5 demo clips)" uv run pitchview sam --split test --demo 5
+    run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5
+    run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
+    run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
     ;;
 esac

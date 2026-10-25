@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pitchstate.coco import link_or_copy
-from pitchstate.gsr import list_clips
-from pitchstate.pitch import N_KEYPOINTS, keypoint_labels, oracle_homography
+from pitchview.coco import link_or_copy
+from pitchview.gsr import list_clips
+from pitchview.pitch import N_KEYPOINTS, keypoint_labels, oracle_homography
 
 
 def write_yolo_pose_dataset(

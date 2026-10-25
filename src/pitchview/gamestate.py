@@ -13,11 +13,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from pitchstate.evaluate import prediction
-from pitchstate.pitch import nearest_homography, to_pitch
-from pitchstate.segment import attach_masks, box_iou
-from pitchstate.teams import cluster_teams, name_sides
-from pitchstate.track import bytetrack
+from pitchview.evaluate import prediction
+from pitchview.pitch import nearest_homography, to_pitch
+from pitchview.segment import attach_masks, box_iou
+from pitchview.teams import cluster_teams, name_sides
+from pitchview.track import bytetrack
 
 BOX = ["x1", "y1", "x2", "y2"]
 

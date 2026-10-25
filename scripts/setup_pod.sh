@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Set up a fresh Runpod pod that has the `pitchstate` network volume mounted at /workspace.
+# Set up a fresh Runpod pod that has the `pitchview` network volume mounted at /workspace.
 #
 # First pod (repo not on the volume yet):
-#   curl -fsSL https://raw.githubusercontent.com/nathankyryk/pitchstate/master/scripts/setup_pod.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/nathankyryk/pitchview/master/scripts/setup_pod.sh | bash
 # Any later pod:
-#   bash /workspace/pitchstate/scripts/setup_pod.sh
+#   bash /workspace/pitchview/scripts/setup_pod.sh
 #
 # Safe to re-run: every step checks what is already there. Python, packages, data and
 # model weights are kept on the volume, so a second pod is ready in a minute or two.
-# Ends with `pitchstate doctor`; a non-zero exit means something needs attention.
+# Ends with `pitchview doctor`; a non-zero exit means something needs attention.
 
 set -euo pipefail
 
-REPO_URL="https://github.com/nathankyryk/pitchstate.git"
+REPO_URL="https://github.com/nathankyryk/pitchview.git"
 UV_VERSION="0.13.1"  # same uv that wrote uv.lock
 WORKSPACE="${WORKSPACE:-/workspace}"
-REPO_DIR="$WORKSPACE/pitchstate"
+REPO_DIR="$WORKSPACE/pitchview"
 SAM_BYTES=3502755717  # size of facebook/sam3.1 sam3.1_multiplex.pt
 PITCH_URL="https://drive.google.com/uc?id=1Ma5Kt86tgpdjCTKfum79YMgNnSjcoOyf"  # Roboflow sports, pitch keypoints
 
@@ -44,6 +44,15 @@ fi
 echo "git, curl and tmux present"
 
 step "Repository"
+OLD_DIR="$WORKSPACE/pitchstate"  # the project's name until 2026-10-25
+if [ -d "$OLD_DIR/.git" ] && [ ! -e "$REPO_DIR" ]; then
+  # Move the old checkout rather than clone again: its environment, weights and outputs stay.
+  mv "$OLD_DIR" "$REPO_DIR"
+  git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
+  # Scripts in the environment name the old folder in their first line; point them at the new one.
+  { grep -lIs "^#!$OLD_DIR/" "$REPO_DIR"/.venv/bin/* || true; } | xargs -r sed -i "1s|^#!$OLD_DIR/|#!$REPO_DIR/|"
+  echo "moved $OLD_DIR -> $REPO_DIR"
+fi
 if [ -d "$REPO_DIR/.git" ]; then
   git -C "$REPO_DIR" pull --ff-only
 else
@@ -83,7 +92,7 @@ step "SoccerNet GSR data"
 # ~17x faster than the network volume (834 vs 49 files/s measured). Local disk is wiped
 # when the pod stops, so each new pod unpacks again (a few minutes).
 zips="$WORKSPACE/datasets/SoccerNetGS"
-local_data="/root/pitchstate-data"
+local_data="/root/pitchview-data"
 mkdir -p "$zips/gamestate-2024" "$local_data"
 if [ -d "$REPO_DIR/data" ] && [ ! -L "$REPO_DIR/data" ]; then
   # Older layout (data on the volume): keep any downloaded zips, drop the slow partial unpack.
@@ -110,13 +119,13 @@ if [ -f weights/sam3.1_multiplex.pt ]; then
 else
   echo "!! SAM 3.1 weights missing (gated, so they come from the laptop). In PowerShell on the laptop:"
   printf '   scp -P <PORT> %s root@<POD_IP>:%s/weights/\n' \
-    'C:\Users\natha\code\pitchstate\weights\sam3.1_multiplex.pt' "$REPO_DIR"
+    'C:\Users\natha\code\pitchview\weights\sam3.1_multiplex.pt' "$REPO_DIR"
   echo "   (<POD_IP> and <PORT>: the pod's 'SSH over exposed TCP' line in the Runpod console)"
 fi
 ls -lh weights
 
-step "pitchstate doctor"
-if uv run pitchstate doctor; then
+step "pitchview doctor"
+if uv run pitchview doctor; then
   printf '\nReady. Next: bash scripts/run_gpu_jobs.sh check   (log: %s)\n' "$LOG"
 else
   printf '\nNot ready: fix the !! lines above, then re-run this script. (log: %s)\n' "$LOG"

@@ -1,6 +1,6 @@
 """Fine-tune RF-DETR on GSR and run it over clips.
 
-Classes: player, goalkeeper, referee, ball (see pitchstate.coco.CATEGORIES).
+Classes: player, goalkeeper, referee, ball (see pitchview.coco.CATEGORIES).
 Predictions go to one Parquet file per clip, so an interrupted run can resume.
 """
 
@@ -13,8 +13,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
-from pitchstate.coco import CLASS_NAMES
-from pitchstate.gsr import Clip
+from pitchview.coco import CLASS_NAMES
+from pitchview.gsr import Clip
 
 SIZES = ("nano", "small", "medium")
 

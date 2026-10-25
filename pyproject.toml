@@ -1,5 +1,5 @@
 [project]
-name = "pitchstate"
+name = "pitchview"
 version = "0.1.0"
 description = "Soccer game-state reconstruction from broadcast video (RF-DETR, SAM 3.1, ByteTrack, pitch calibration, jersey numbers), evaluated on SoccerNet GSR"
 readme = "README.md"
@@ -41,7 +41,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pitchstate = "pitchstate.cli:app"
+pitchview = "pitchview.cli:app"
 
 [dependency-groups]
 dev = ["pytest", "ruff"]

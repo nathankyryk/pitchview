@@ -8,8 +8,8 @@ Usage:
 import argparse
 from pathlib import Path
 
-from pitchstate.coco import convert_split
-from pitchstate.gsr import DEFAULT_ROOT, SPLITS
+from pitchview.coco import convert_split
+from pitchview.gsr import DEFAULT_ROOT, SPLITS
 
 
 def main() -> None:
