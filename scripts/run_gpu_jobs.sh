@@ -4,8 +4,9 @@
 #   bash scripts/run_gpu_jobs.sh check   # attended, ~30 min: 1-clip test of every job + timing runs
 #   bash scripts/run_gpu_jobs.sh train   # unattended, ~4.75 h; the pod stops itself at the end
 #   bash scripts/run_gpu_jobs.sh infer   # unattended, ~3.25 h; the pod stops itself at the end
+#   bash scripts/run_gpu_jobs.sh all     # unattended, ~8 h: train, then infer, then the pod stops
 #
-# train and infer re-launch themselves inside tmux, so a dropped SSH connection can't kill
+# train, infer and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
 # job never bills overnight. Every step is timed; a failed step doesn't stop the others.
 # Logs and outputs live on the volume: /workspace/logs and /workspace/pitchview/outputs.
@@ -19,8 +20,8 @@ set -euo pipefail
 
 stage="${1:-}"
 case "$stage" in
-  check | train | infer) ;;
-  *) echo "usage: $0 check|train|infer" >&2; exit 2 ;;
+  check | train | infer | all) ;;
+  *) echo "usage: $0 check|train|infer|all" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/pod_env.sh
@@ -116,6 +117,26 @@ can_stop_self() { # train/infer stop the pod with runpodctl and the pod's own ke
   echo "pod $RUNPOD_POD_ID: runpodctl and the pod key are present"
 }
 
+train_steps() {
+  run "train detector ($DETECTOR_EPOCHS epochs)" uv run pitchview train-detector --epochs "$DETECTOR_EPOCHS" \
+    --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES" --batch-size "$DETECTOR_BATCH" --grad-accum "$DETECTOR_ACCUM"
+  run "train pitch model ($PITCH_EPOCHS epochs)" uv run pitchview train-pitch --epochs "$PITCH_EPOCHS"
+}
+
+infer_steps() {
+  run "detect: test" uv run pitchview detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+  run "detect: valid" uv run pitchview detect --split valid --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+  run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
+  run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
+  run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
+  # Masks can't be remade once the volume is gone, so keep every one (RLE, ~10 MB a clip):
+  # the viewer can then show and toggle each player's mask on any test clip.
+  run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
+  run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
+  run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
+  run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
+}
+
 run "update code" git pull --ff-only
 run "sync environment" uv sync --frozen
 
@@ -145,24 +166,9 @@ case "$stage" in
     [ -n "$pitch_epoch" ] && printf 'Pitch model: ~%ds per epoch -> %d epochs ~ %d min\n' \
       "$pitch_epoch" "$PITCH_EPOCHS" $((pitch_epoch * PITCH_EPOCHS / 60))
     [ -n "$sam_clip" ] && printf 'SAM 3.1: ~%ds per clip -> 54 clips ~ %d min\n' "$sam_clip" $((sam_clip * 54 / 60))
-    printf '\nIf everything above is ok:  DETECTOR_EPOCHS=<n> bash scripts/run_gpu_jobs.sh train\n'
+    printf '\nIf everything above is ok:  DETECTOR_EPOCHS=<n> bash scripts/run_gpu_jobs.sh all\n'
     ;;
-  train)
-    run "train detector ($DETECTOR_EPOCHS epochs)" uv run pitchview train-detector --epochs "$DETECTOR_EPOCHS" \
-      --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES" --batch-size "$DETECTOR_BATCH" --grad-accum "$DETECTOR_ACCUM"
-    run "train pitch model ($PITCH_EPOCHS epochs)" uv run pitchview train-pitch --epochs "$PITCH_EPOCHS"
-    ;;
-  infer)
-    run "detect: test" uv run pitchview detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
-    run "detect: valid" uv run pitchview detect --split valid --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
-    run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
-    run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
-    run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
-    # Masks can't be remade once the volume is gone, so keep every one (RLE, ~10 MB a clip):
-    # the viewer can then show and toggle each player's mask on any test clip.
-    run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
-    run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
-    run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
-    run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
-    ;;
+  train) train_steps ;;
+  infer) infer_steps ;;
+  all) train_steps; infer_steps ;;
 esac
