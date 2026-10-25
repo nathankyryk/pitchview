@@ -9,6 +9,7 @@ from pitchview.segment import (
     attach_masks,
     box_iou,
     drop_offload_state_arg,
+    keep_recent_memory_on_gpu,
     mask_features,
     write_tracks,
 )
@@ -112,3 +113,17 @@ def test_sam_session_start_survives_the_extra_argument():
         resource_path="frames/", offload_video_to_cpu=True, offload_state_to_cpu=False, async_loading_frames=True
     )
     assert state == {"path": "frames/", "offload_video": True}
+
+
+def test_long_video_memory_options_are_switched_on():
+    import torch
+
+    class Tracker(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.trim_past_non_cond_mem_for_eval = False
+            self.offload_output_to_cpu_for_eval = False
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), Tracker())
+    assert keep_recent_memory_on_gpu(model) == 1
+    assert model[1].trim_past_non_cond_mem_for_eval and model[1].offload_output_to_cpu_for_eval
