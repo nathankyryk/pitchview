@@ -133,7 +133,7 @@ class GroundTruthTracks:
 class MaskWriter:
     """A `write_tracks` hook that keeps every mask of a clip as COCO run-length encoding.
 
-    Only used for the few demo clips: raw masks are ~50 MB per frame, RLE a few KB.
+    Raw masks are ~50 MB per frame, RLE a few KB, so every test clip can keep them.
     """
 
     def __init__(self):

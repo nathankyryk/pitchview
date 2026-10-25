@@ -12,7 +12,8 @@
 #
 # Settings (environment variables):
 #   DETECTOR_SIZE=medium DETECTOR_RES=1120 DETECTOR_BATCH=4 DETECTOR_ACCUM=4 DETECTOR_EPOCHS=20
-#   PITCH_EPOCHS=20      NO_STOP=1 keeps the pod running after train/infer
+#   PITCH_EPOCHS=20      MASK_CLIPS=49 (test clips whose full masks are kept)
+#   NO_STOP=1 keeps the pod running after train/infer
 
 set -euo pipefail
 
@@ -32,6 +33,7 @@ DETECTOR_BATCH="${DETECTOR_BATCH:-4}"
 DETECTOR_ACCUM="${DETECTOR_ACCUM:-4}"
 DETECTOR_EPOCHS="${DETECTOR_EPOCHS:-20}"
 PITCH_EPOCHS="${PITCH_EPOCHS:-20}"
+MASK_CLIPS="${MASK_CLIPS:-49}"  # test clips whose full masks are kept (test has 49)
 NO_STOP="${NO_STOP:-0}"
 
 # Long stages: re-launch inside tmux, passing the settings explicitly (a running tmux
@@ -43,7 +45,7 @@ if [ "$stage" != check ] && [ -z "${INSIDE_JOB:-}" ]; then
   fi
   tmux new-session -d -s "$stage" \
     "env INSIDE_JOB=1 DETECTOR_SIZE=$DETECTOR_SIZE DETECTOR_RES=$DETECTOR_RES DETECTOR_BATCH=$DETECTOR_BATCH \
-DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PITCH_EPOCHS NO_STOP=$NO_STOP \
+DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PITCH_EPOCHS MASK_CLIPS=$MASK_CLIPS NO_STOP=$NO_STOP \
 bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
   echo "Started '$stage' in tmux. Watch it: tmux attach -t $stage   (leave it running: Ctrl-b then d)"
   echo "Status so far: cat $LOG_DIR/${stage}_status.txt"
@@ -156,8 +158,10 @@ case "$stage" in
     run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
     run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
     run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
-    run "SAM 3.1: test (+5 demo clips)" uv run pitchview sam --split test --demo 5
-    run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5
+    # Masks can't be remade once the volume is gone, so keep every one (RLE, ~10 MB a clip):
+    # the viewer can then show and toggle each player's mask on any test clip.
+    run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
+    run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
     run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
     run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
     ;;
