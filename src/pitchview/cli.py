@@ -843,6 +843,7 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
     --tabs (repeatable): full, truth, specialist, foundation; all four by default. The foundation tab's
     score is --sam-run's: the full system with SAM 3.1's tracks."""
     from pitchview.analytics import summarise
+    from pitchview.render import faststart
 
     runs: dict = {}
     for path in results or EVAL_RESULTS:
@@ -868,6 +869,7 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
             dest = out / "videos" / tab / f"{clip.name}.mp4"
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(video, dest)
+            faststart(dest)
             typer.echo(f"  {clip.name}: {dest}")
         sam_score = runs.get(sam_run, {}).get("gs", {}).get("clips", {}).get(clip.name)
         state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"

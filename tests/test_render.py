@@ -111,3 +111,25 @@ def test_track_colour_uses_the_role_then_the_track():
     assert track_colour("referee", 3) == ROLE_COLOURS["referee"]
     assert track_colour("person", 3) == TRACK_PALETTE[3]
     assert track_colour("person", 3 + len(TRACK_PALETTE)) == TRACK_PALETTE[3]
+
+
+def test_faststart_moves_the_index_first(tmp_path):
+    import av
+
+    from pitchview.render import faststart, index_first
+
+    path = tmp_path / "clip.mp4"
+    with av.open(str(path), "w") as out:  # PyAV writes the index last by default
+        stream = out.add_stream("libx264", rate=25)
+        stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
+        for i in range(10):
+            frame = av.VideoFrame.from_ndarray(np.full((48, 64, 3), i * 20, np.uint8), format="rgb24")
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    assert not index_first(path)
+    faststart(path)
+    assert index_first(path)
+    with av.open(str(path)) as c:
+        assert sum(1 for _ in c.decode(video=0)) == 10

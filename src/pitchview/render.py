@@ -209,6 +209,31 @@ def sorted_box(a: tuple[int, int], b: tuple[int, int]) -> list[int]:
     return [min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])]
 
 
+def index_first(path: Path) -> bool:
+    """Whether an MP4's index (moov) comes before its data (mdat), so a browser can start at once."""
+    with open(path, "rb") as f:
+        head = f.read(4096)
+    return b"moov" in head and (b"mdat" not in head or head.index(b"moov") < head.index(b"mdat"))
+
+
+def faststart(path: Path) -> None:
+    """Move an MP4's index to the front without re-encoding (videos rendered before render_clip did it)."""
+    import av
+
+    path = Path(path)
+    if index_first(path):
+        return
+    tmp = path.with_suffix(".fs.mp4")
+    with av.open(str(path)) as src, av.open(str(tmp), "w", options={"movflags": "faststart"}) as dst:
+        stream = dst.add_stream_from_template(src.streams.video[0])
+        for packet in src.demux(src.streams.video[0]):
+            if packet.dts is None:  # the demuxer's final flush packet
+                continue
+            packet.stream = stream
+            dst.mux(packet)
+    tmp.replace(path)
+
+
 def blend_mask(frame: np.ndarray, mask: np.ndarray, colour: tuple[int, int, int], alpha: float = MASK_ALPHA) -> None:
     """Tint the mask's pixels and outline it, in place."""
     ys, xs = np.nonzero(mask)
@@ -265,7 +290,7 @@ def render_clip(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".tmp.mp4")
-    container = av.open(str(tmp), "w")
+    container = av.open(str(tmp), "w", options={"movflags": "faststart"})  # index first: browsers can start at once
     width, height = frames[0].width, frames[0].height
     stream = container.add_stream("libx264", rate=Fraction(fps).limit_denominator(1000))
     stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
