@@ -667,5 +667,42 @@ def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: 
         save.write_text(json.dumps({"split": split, "clips": clips, "runs": report}, indent=1))
         typer.echo(f"saved {save}")
 
+# README labels for the runs in the results table, in table order.
+RUN_LABELS = {
+    "baseline": "Official baseline (sn-gamestate: PRTReID + StrongSORT), rescored",
+    "main": "**PitchView** (RF-DETR + ByteTrack, SAM 3.1 masks)",
+    "sam": "PitchView with SAM 3.1's own tracks",
+    "main_nomerge": "without track linking by jersey",
+    "main_s5": "without pitch checks, 5-frame smoothing",
+    "nojersey": "without jersey numbers",
+    "boxfoot": "foot point from the box, not the mask",
+    "boxteam": "teams from box crops, not mask crops",
+    "offtheshelf": "off-the-shelf pitch model",
+    "oracle_pitch": "with perfect calibration",
+    "oracle_dets": "with perfect detection",
+    "oracle_dets_pitch": "with perfect detection and calibration",
+}
+
+
+@app.command()
+def table(results: list[Path]) -> None:
+    """Markdown results table from `eval --detail --save` JSON files (later files win on repeats)."""
+    runs: dict = {}
+    for path in results:
+        data = json.loads(path.read_text())
+        runs.update(data["runs"])
+    order = [r for r in RUN_LABELS if r in runs] + [r for r in runs if r not in RUN_LABELS]
+    typer.echo("| Run | GS-HOTA | DetA | AssA | GS-HOTA, jerseys not checked | Tracking HOTA | IDF1 | ID switches |")
+    typer.echo("|---|---|---|---|---|---|---|---|")
+    for name in order:
+        row = runs[name]
+        gs, track = row["gs"], row["track"]
+        no_jersey = f"{row['no_jersey']['HOTA']:.1f}" if "no_jersey" in row else "-"
+        idf1 = f"{track['IDF1']:.1f}" if "IDF1" in track else "-"
+        idsw = f"{track['IDSW']:,}" if "IDSW" in track else "-"
+        typer.echo(f"| {RUN_LABELS.get(name, name)} | {gs['HOTA']:.1f} | {gs['DetA']:.1f} | {gs['AssA']:.1f} | "
+                   f"{no_jersey} | {track['HOTA']:.1f} | {idf1} | {idsw} |")  # fmt: skip
+
+
 if __name__ == "__main__":
     app()
