@@ -59,6 +59,56 @@ def write_predictions(trackers_root: Path, split: str, tracker: str, clip_name: 
     return path
 
 
+def detection_ap(clips: list[Clip], detections: dict[str, pd.DataFrame], stride: int = 5) -> dict[str, dict]:
+    """COCO box AP per class (mAP50-95 and AP50), with pycocotools.
+
+    Uses the frames and rules the detector was trained with (coco.convert_split): every
+    `stride`-th labelled frame without ignore regions, boxes clipped to the image, and
+    GSR's "other" class left out. Returns {class or "all": {"ap": ..., "ap50": ...}}.
+    """
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+
+    from pitchview.coco import CATEGORIES, CLASS_NAMES, clip_box
+
+    class_ids = {name: cid for cid, name in CLASS_NAMES.items()}
+    images, annotations, results = [], [], []
+    for clip in clips:
+        by_frame = clip.boxes_by_frame()
+        dets_by_frame = {f: d for f, d in detections[clip.name].groupby("frame")}
+        for frame in clip.frames:
+            if (frame.index - 1) % stride or not frame.has_labeled_person or frame.has_ignore_regions:
+                continue
+            image_id = len(images) + 1
+            images.append({"id": image_id, "width": frame.width, "height": frame.height})
+            for box in by_frame.get(frame.index, []):
+                bbox = clip_box(box, frame.width, frame.height) if box.category_id in CLASS_NAMES else None
+                if bbox is not None:
+                    annotations.append({"id": len(annotations) + 1, "image_id": image_id, "category_id": box.category_id,
+                                        "bbox": bbox, "area": bbox[2] * bbox[3], "iscrowd": 0})  # fmt: skip
+            d = dets_by_frame.get(frame.index)
+            if d is not None:
+                for r in d.itertuples(index=False):
+                    results.append({"image_id": image_id, "category_id": class_ids[r.class_name],
+                                    "bbox": [r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1], "score": float(r.score)})  # fmt: skip
+    gt = COCO()
+    gt.dataset = {"images": images, "annotations": annotations, "categories": CATEGORIES[1:]}
+    gt.createIndex()
+    ev = COCOeval(gt, gt.loadRes(results), "bbox")
+    ev.evaluate()
+    ev.accumulate()
+    precision = ev.eval["precision"]  # IoU thresholds x recall x class x area x max dets
+
+    def ap(p: np.ndarray) -> float:
+        p = p[p > -1]
+        return float(p.mean()) if p.size else float("nan")
+
+    out = {"all": {"ap": ap(precision[:, :, :, 0, -1]), "ap50": ap(precision[0, :, :, 0, -1])}}
+    for k, cid in enumerate(ev.params.catIds):
+        out[CLASS_NAMES[cid]] = {"ap": ap(precision[:, :, k, 0, -1]), "ap50": ap(precision[0, :, k, 0, -1])}
+    return out
+
+
 def jersey_truth(tracks: pd.DataFrame, clip: Clip, min_iou: float = 0.5) -> pd.DataFrame:
     """The true number behind each predicted track that follows a player, for scoring jersey reads.
 
@@ -131,9 +181,10 @@ def gs_hota(
     use_jersey: bool = True,
     use_teams: bool = True,
     use_roles: bool = True,
-) -> dict[str, float]:
+    per_clip: bool = False,
+) -> dict:
     """Run the official evaluator. Returns GS-HOTA with its detection (DetA) and association
-    (AssA) parts, in percent, over the given clips."""
+    (AssA) parts, in percent, over the given clips; with per_clip, also {"clips": {clip: GS-HOTA}}."""
     import trackeval
 
     eval_config = trackeval.Evaluator.get_default_eval_config()
@@ -159,4 +210,8 @@ def gs_hota(
     dataset = trackeval.datasets.SoccerNetGS(dataset_config)
     results, _ = evaluator.evaluate([dataset], [trackeval.metrics.HOTA({"THRESHOLD": 0.5})])
     hota = results[BENCHMARK][tracker]["COMBINED_SEQ"]["person"]["HOTA"]
-    return {k: float(np.mean(hota[k]) * 100) for k in ("HOTA", "DetA", "AssA")}
+    scores = {k: float(np.mean(hota[k]) * 100) for k in ("HOTA", "DetA", "AssA")}
+    if per_clip:
+        scores["clips"] = {seq: float(np.mean(r["person"]["HOTA"]["HOTA"]) * 100)
+                           for seq, r in results[BENCHMARK][tracker].items() if seq in clips}  # fmt: skip
+    return scores

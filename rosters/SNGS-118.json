@@ -1,0 +1,24 @@
+{
+  "match": "FC Thun (home, red) vs FC St. Gallen (white/green), Swiss Super League - guess from the stadium, confirm",
+  "kits": {
+    "left": "white with green (St. Gallen?)",
+    "right": "red (FC Thun)"
+  },
+  "left": {
+    "4": "",
+    "11": "",
+    "14": "",
+    "36": "",
+    "44": "",
+    "93": ""
+  },
+  "right": {
+    "8": "",
+    "10": "",
+    "14": "",
+    "20": "",
+    "25": "",
+    "34": "",
+    "36": ""
+  }
+}

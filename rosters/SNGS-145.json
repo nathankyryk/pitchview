@@ -1,0 +1,30 @@
+{
+  "match": "Neuchatel Xamax (home, red/black stripes) vs FC St. Gallen (white/green), Swiss Super League - guess from the stadium, confirm",
+  "kits": {
+    "left": "red/black stripes (Xamax)",
+    "right": "white with green (St. Gallen?)"
+  },
+  "left": {
+    "7": "",
+    "9": "",
+    "10": "",
+    "14": "",
+    "16": "",
+    "20": "",
+    "23": "",
+    "25": "",
+    "26": "",
+    "55": ""
+  },
+  "right": {
+    "4": "",
+    "5": "",
+    "10": "",
+    "11": "",
+    "14": "",
+    "15": "",
+    "33": "",
+    "36": "",
+    "50": ""
+  }
+}

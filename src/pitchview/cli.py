@@ -279,6 +279,73 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
         typer.echo(f"  {clip.name}: {sum(v is not None for v in numbers.values())}/{len(numbers)} tracks read")
 
 
+@app.command()
+def baseline(archive: Path = OUT / "baseline" / "gamestate-prtreid-strongsort-test-compressed.pklz",
+             split: str = "test", limit: int | None = None) -> None:  # fmt: skip
+    """Write the official GSR baseline's published predictions as run "baseline", to score with `eval`.
+    Download the archive first (766 MB): see pitchview.baseline.TEST_URL."""
+    from pitchview.baseline import TEST_URL, video_predictions
+    from pitchview.evaluate import write_predictions
+
+    if not archive.exists():
+        raise typer.Exit(f"{archive} not found; download it from {TEST_URL}")
+    for clip in _clips(split, False, limit):
+        preds = video_predictions(archive, clip.name)
+        write_predictions(OUT / "trackers", split, "baseline", clip.name, preds)
+        typer.echo(f"  {clip.name}: {len(preds)} predictions")
+
+
+@app.command("roster-template")
+def roster_template(clips: list[str], split: str = "test") -> None:
+    """Write rosters/<clip>.json to fill in by hand: the kit numbers seen on each side (from the labels)
+    and each side's shirt colour. Names go in as "Firstname Lastname"; the nametag shortens them."""
+    from PIL import Image
+
+    from pitchview.jersey import shirt_region
+
+    by_name = {c.name: c for c in _clips(split, False)}
+    for name in clips:
+        clip = by_name[name]
+        numbers: dict = {"left": set(), "right": set()}
+        colours: dict = {"left": [], "right": []}
+        by_frame = clip.boxes_by_frame()
+        for frame in clip.frames[::75]:  # 10 frames for the colour
+            image = Image.open(frame.path).convert("RGB")
+            for b in by_frame.get(frame.index, []):
+                if b.role == "player" and b.team in colours:
+                    crop = image.crop(shirt_region((b.x, b.y, b.x + b.w, b.y + b.h)))
+                    colours[b.team].append(np.asarray(crop).reshape(-1, 3).mean(axis=0))
+        for b in clip.boxes:
+            if b.role == "player" and b.team in numbers and b.jersey:
+                numbers[b.team].add(b.jersey)
+        kits = {side: "rgb({:.0f}, {:.0f}, {:.0f})".format(*np.median(c, axis=0)) if c else "" for side, c in colours.items()}
+        roster = {
+            "match": "",  # "home vs away, competition, date"
+            "kits": kits,
+            **{side: {n: "" for n in sorted(nums, key=int)} for side, nums in numbers.items()},
+        }
+        path = Path("rosters") / f"{name}.json"
+        if path.exists():
+            typer.echo(f"  {name}: {path} exists, left as is")
+            continue
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(roster, indent=2) + "\n")
+        typer.echo(f"  {name}: {len(roster['left'])} left / {len(roster['right'])} right numbers, kits {roster['kits']}")
+
+
+@app.command("detector-score")
+def detector_score(split: str = "test", dets: str = "model", limit: int | None = None, stride: int = 5) -> None:
+    """Box AP per class (ball separate) on the frames and rules the detector trained with."""
+    from pitchview.evaluate import detection_ap
+
+    clips = _clips(split, False, limit)
+    scores = detection_ap(clips, {c.name: _detections(OUT, split, c, dets) for c in clips}, stride)
+    typer.echo(f"{split}: {len(clips)} clips, every {stride}th labelled frame")
+    typer.echo(f"{'class':12s} {'mAP50-95':>9s} {'AP50':>6s}")
+    for name, s in scores.items():
+        typer.echo(f"{name:12s} {s['ap']:9.3f} {s['ap50']:6.3f}")
+
+
 @app.command("jersey-score")
 def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
                  min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, grid: bool = False) -> None:  # fmt: skip
