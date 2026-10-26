@@ -8,6 +8,7 @@ Stage outputs are written one file per clip; a re-run skips clips that are alrea
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from pathlib import Path
@@ -781,6 +782,76 @@ def position_error(names: list[str], split: str = "test", save: Path | None = No
         save.parent.mkdir(parents=True, exist_ok=True)
         save.write_text(json.dumps({"split": split, "runs": report}, indent=1))
         typer.echo(f"saved {save}")
+
+
+EVAL_RESULTS = [OUT / "logs" / "eval_test_earlier.json", OUT / "logs" / "eval_test_final.json"]
+
+
+def _no_nan(value):
+    """JSON-safe copy: NaN becomes None (pandas leaves NaN for a missing jersey number)."""
+    if isinstance(value, dict):
+        return {k: _no_nan(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_no_nan(v) for v in value]
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+@app.command()
+def bundle(clips: list[str], run: str = "main", split: str = "test", out: Path = Path("demo"),
+           results: list[Path] | None = None) -> None:  # fmt: skip
+    """Collect the viewer's files: each clip's rendered video (rendered first if missing), its
+    scores from `eval --save` JSON files (later files win) and its match stats. Then `pitchview viewer`."""
+    from pitchview.analytics import summarise
+
+    runs: dict = {}
+    for path in results or EVAL_RESULTS:
+        runs.update(json.loads(path.read_text())["runs"])
+    if run not in runs:
+        raise typer.Exit(f"no scores for {run}: run `pitchview eval {run} --detail --save ...` first")
+    baseline = runs.get("baseline", {}).get("gs", {})
+    manifest = {
+        "overall": {
+            "split": split,
+            "clips": len(runs[run]["gs"]["clips"]),
+            "gs_hota": runs[run]["gs"]["HOTA"],
+            "baseline": baseline.get("HOTA"),
+        },
+        "tabs": {"full": run},
+        "clips": {},
+    }
+    for clip in _clips(split, False, None, clips):
+        video = OUT / "videos" / run / f"{clip.name}.mp4"
+        if not video.exists():
+            render([clip.name], split=split, run=run)
+        dest = out / "videos" / "full" / f"{clip.name}.mp4"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(video, dest)
+        state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"
+        ball_path = state_path.with_name(f"{clip.name}_ball.parquet")
+        ball = pd.read_parquet(ball_path) if ball_path.exists() else None
+        manifest["clips"][clip.name] = {
+            "game": str(clip.labels["info"].get("game_id", "")),
+            "scores": {
+                "full": {
+                    "gs_hota": runs[run]["gs"]["clips"].get(clip.name),
+                    "baseline": baseline.get("clips", {}).get(clip.name),
+                }
+            },
+            "stats": summarise(pd.read_parquet(state_path), ball, clip.fps),
+        }
+        typer.echo(f"  {clip.name}: {dest}")
+    (out / "manifest.json").write_text(json.dumps(_no_nan(manifest), indent=1, default=str))
+    typer.echo(f"wrote {out / 'manifest.json'}. Next: pitchview viewer --bundle {out}")
+
+
+@app.command()
+def viewer(bundle: Path = Path("demo"), port: int = 7860, share: bool = False) -> None:
+    """The demo app (Gradio) on a bundle made by `pitchview bundle`; it runs no model."""
+    from pitchview.viewer import build
+
+    build(bundle).launch(server_port=port, share=share)
 
 
 # README labels for the runs in the results table, in table order.

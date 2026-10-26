@@ -14,7 +14,10 @@ data/
 weights/
 outputs/
 runs/
-/*.pt  # Ultralytics downloads pretrained weights (yolo26m.pt) into the working directory
+# Ultralytics downloads pretrained weights (yolo26m.pt) into the working directory
+/*.pt
 
 # Secrets
 .env
+# Viewer bundles: rendered broadcast clips stay off GitHub
+/demo/
