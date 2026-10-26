@@ -182,9 +182,15 @@ def gs_hota(
     use_teams: bool = True,
     use_roles: bool = True,
     per_clip: bool = False,
+    detail: bool = False,
 ) -> dict:
     """Run the official evaluator. Returns GS-HOTA with its detection (DetA) and association
-    (AssA) parts, in percent, over the given clips; with per_clip, also {"clips": {clip: GS-HOTA}}."""
+    (AssA) parts, in percent, over the given clips; with per_clip, also {"clips": {clip: GS-HOTA}}.
+
+    detail adds the error breakdown: detection recall and precision (DetRe, DetPr: missed vs extra
+    people), association recall and precision (AssRe, AssPr: tracks split vs merged), localisation
+    (LocA), and the CLEAR/Identity scores at similarity 0.5 (MOTA, IDF1 in percent; ID switches,
+    fragmentations, misses and false positives as counts)."""
     import trackeval
 
     eval_config = trackeval.Evaluator.get_default_eval_config()
@@ -208,9 +214,19 @@ def gs_hota(
     )
     evaluator = trackeval.Evaluator(eval_config)
     dataset = trackeval.datasets.SoccerNetGS(dataset_config)
-    results, _ = evaluator.evaluate([dataset], [trackeval.metrics.HOTA({"THRESHOLD": 0.5})])
-    hota = results[BENCHMARK][tracker]["COMBINED_SEQ"]["person"]["HOTA"]
-    scores = {k: float(np.mean(hota[k]) * 100) for k in ("HOTA", "DetA", "AssA")}
+    metrics = [trackeval.metrics.HOTA({"THRESHOLD": 0.5})]
+    if detail:
+        metrics += [trackeval.metrics.CLEAR({"THRESHOLD": 0.5, "PRINT_CONFIG": False}),
+                    trackeval.metrics.Identity({"THRESHOLD": 0.5, "PRINT_CONFIG": False})]  # fmt: skip
+    results, _ = evaluator.evaluate([dataset], metrics)
+    combined = results[BENCHMARK][tracker]["COMBINED_SEQ"]["person"]
+    hota = combined["HOTA"]
+    keys = ("HOTA", "DetA", "AssA") + (("DetRe", "DetPr", "AssRe", "AssPr", "LocA") if detail else ())
+    scores = {k: float(np.mean(hota[k]) * 100) for k in keys}
+    if detail:
+        scores["MOTA"] = float(combined["CLEAR"]["MOTA"] * 100)
+        scores["IDF1"] = float(combined["Identity"]["IDF1"] * 100)
+        scores.update({k: int(combined["CLEAR"][k]) for k in ("IDSW", "Frag", "CLR_FN", "CLR_FP")})
     if per_clip:
         scores["clips"] = {seq: float(np.mean(r["person"]["HOTA"]["HOTA"]) * 100)
                            for seq, r in results[BENCHMARK][tracker].items() if seq in clips}  # fmt: skip

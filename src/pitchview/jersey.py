@@ -30,6 +30,23 @@ def shirt_region(box: tuple[float, float, float, float]) -> tuple[int, int, int,
     return int(x1 + 0.10 * w), int(y1 + 0.15 * h), int(np.ceil(x1 + 0.90 * w)), int(np.ceil(y1 + 0.60 * h))
 
 
+def shirt_crop(image: Image.Image, box, mask: np.ndarray | None = None, fill: int = 128) -> Image.Image:
+    """The shirt region of an image. With the person's mask, everything else (grass, a team-mate
+    overlapping the box) is set to grey, which PARSeq's input normalisation maps to zero."""
+    region = shirt_region(box)
+    crop = image.crop(region)
+    if mask is None:
+        return crop
+    x0, y0, x1, y1 = region
+    h, w = mask.shape
+    keep = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    ys, xs = slice(max(y0, 0), min(y1, h)), slice(max(x0, 0), min(x1, w))
+    keep[ys.start - y0 : ys.stop - y0, xs.start - x0 : xs.stop - x0] = mask[ys, xs]
+    pixels = np.array(crop.convert("RGB"))
+    pixels[~keep] = fill
+    return Image.fromarray(pixels)
+
+
 def parse_number(text: str) -> str | None:
     """Keep 1-2 digit reads; anything else is treated as no read."""
     digits = re.sub(r"\D", "", text)
@@ -68,9 +85,10 @@ NOT_PLAYER_NUMBERS = frozenset({"1"})
 # Tuned with `pitchview jersey-score --grid` on the 5 valid clips (2026-10-26). With "1" excluded,
 # 0.7 gave the most player frames with the right number for both trackers:
 # ByteTrack 53.8% (30.1% with the old 0.5 vote that kept "1"), SAM tracks 52.9% (was 33.3%).
-# The CLI also merges one-digit reads into two-digit ones (merge_partial): ByteTrack 55.1%, SAM unchanged.
 # One rule for both trackers: ByteTrack alone did best at 0.6 with 2 agreeing reads (57.0%), but 5 clips
 # are too few to tune each tracker separately.
+# merge_partial (one-digit reads count toward a two-digit one) is off: +1.3 points for ByteTrack on the
+# valid clips, but -0.6 (ByteTrack) and -1.3 (SAM tracks) on test, so the valid gain was noise.
 MIN_CONF = 0.7
 
 

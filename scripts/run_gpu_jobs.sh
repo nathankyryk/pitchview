@@ -6,6 +6,7 @@
 #   bash scripts/run_gpu_jobs.sh infer   # unattended: detection, pitch keypoints, jerseys (ByteTrack)
 #   bash scripts/run_gpu_jobs.sh all     # unattended, on the 4090: train, then infer, then the pod stops
 #   bash scripts/run_gpu_jobs.sh sam     # unattended, on a 48 GB+ card: SAM 3.1 masks and tracks
+#   bash scripts/run_gpu_jobs.sh retrain # unattended, ~3 h on a 4090: detector v2, then its detections
 #
 # train, infer, sam and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
@@ -16,19 +17,40 @@
 #   DETECTOR_SIZE=medium DETECTOR_RES=1120 DETECTOR_BATCH=4 DETECTOR_ACCUM=4 DETECTOR_EPOCHS=20
 #   PITCH_EPOCHS=20      MASK_CLIPS=49 (test clips whose full masks are kept)
 #   NO_STOP=1 keeps the pod running after train/infer
+#   retrain only: DETECTOR_NAME=v2 DETECTOR_LR=5e-5 DETECTOR_LR_ENCODER=7.5e-5 DETECTOR_SCHEDULE=cosine
+#     DETECTOR_WARMUP=1 DETECTOR_MIN_FACTOR=0.05 DETECTOR_PATIENCE=10, and DETECTOR_RES=1280
 
 set -euo pipefail
 
 stage="${1:-}"
 case "$stage" in
-  check | train | infer | sam | all) ;;
-  *) echo "usage: $0 check|train|infer|sam|all" >&2; exit 2 ;;
+  check | train | infer | sam | all | retrain) ;;
+  *) echo "usage: $0 check|train|infer|sam|all|retrain" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/pod_env.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pod_env.sh"
 cd "$REPO_DIR"
 
+# retrain (review feedback, 2026-10-26): Sunday's run kept the learning rate flat (RF-DETR's step
+# schedule first drops at epoch 100) and peaked early. v2: lower rates, a 1-epoch warmup, a cosine
+# decay, and a larger input for the ~13 px ball. Its own folders (detector_v2, detections_v2).
+if [ "$stage" = retrain ]; then
+  DETECTOR_RES="${DETECTOR_RES:-1280}"
+  DETECTOR_LR="${DETECTOR_LR:-5e-5}"
+  DETECTOR_LR_ENCODER="${DETECTOR_LR_ENCODER:-7.5e-5}"
+  DETECTOR_SCHEDULE="${DETECTOR_SCHEDULE:-cosine}"
+  DETECTOR_WARMUP="${DETECTOR_WARMUP:-1}"
+  DETECTOR_MIN_FACTOR="${DETECTOR_MIN_FACTOR:-0.05}"
+  DETECTOR_PATIENCE="${DETECTOR_PATIENCE:-10}"  # let the cosine decay finish
+fi
+DETECTOR_NAME="${DETECTOR_NAME:-v2}"
+DETECTOR_LR="${DETECTOR_LR:-1e-4}"
+DETECTOR_LR_ENCODER="${DETECTOR_LR_ENCODER:-1.5e-4}"
+DETECTOR_SCHEDULE="${DETECTOR_SCHEDULE:-step}"
+DETECTOR_WARMUP="${DETECTOR_WARMUP:-0}"
+DETECTOR_MIN_FACTOR="${DETECTOR_MIN_FACTOR:-0}"
+DETECTOR_PATIENCE="${DETECTOR_PATIENCE:-5}"
 DETECTOR_SIZE="${DETECTOR_SIZE:-medium}"
 DETECTOR_RES="${DETECTOR_RES:-1120}"
 DETECTOR_BATCH="${DETECTOR_BATCH:-4}"
@@ -48,7 +70,9 @@ if [ "$stage" != check ] && [ -z "${INSIDE_JOB:-}" ]; then
   tmux new-session -d -s "$stage" \
     "env INSIDE_JOB=1 DETECTOR_SIZE=$DETECTOR_SIZE DETECTOR_RES=$DETECTOR_RES DETECTOR_BATCH=$DETECTOR_BATCH \
 DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PITCH_EPOCHS MASK_CLIPS=$MASK_CLIPS NO_STOP=$NO_STOP \
-bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
+DETECTOR_NAME=$DETECTOR_NAME DETECTOR_LR=$DETECTOR_LR DETECTOR_LR_ENCODER=$DETECTOR_LR_ENCODER \
+DETECTOR_SCHEDULE=$DETECTOR_SCHEDULE DETECTOR_WARMUP=$DETECTOR_WARMUP DETECTOR_MIN_FACTOR=$DETECTOR_MIN_FACTOR \
+DETECTOR_PATIENCE=$DETECTOR_PATIENCE bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
   echo "Started '$stage' in tmux. Watch it: tmux attach -t $stage   (leave it running: Ctrl-b then d)"
   echo "Status so far: cat $LOG_DIR/${stage}_status.txt"
   exit 0
@@ -135,6 +159,18 @@ infer_steps() {
   run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
 }
 
+retrain_steps() {
+  run "train detector $DETECTOR_NAME ($DETECTOR_EPOCHS epochs, res $DETECTOR_RES, $DETECTOR_SCHEDULE lr $DETECTOR_LR)" \
+    uv run pitchview train-detector --name "$DETECTOR_NAME" --epochs "$DETECTOR_EPOCHS" --size "$DETECTOR_SIZE" \
+    --resolution "$DETECTOR_RES" --batch-size "$DETECTOR_BATCH" --grad-accum "$DETECTOR_ACCUM" --lr "$DETECTOR_LR" \
+    --lr-encoder "$DETECTOR_LR_ENCODER" --schedule "$DETECTOR_SCHEDULE" --warmup "$DETECTOR_WARMUP" \
+    --min-factor "$DETECTOR_MIN_FACTOR" --patience "$DETECTOR_PATIENCE"
+  run "detect: test ($DETECTOR_NAME)" uv run pitchview detect --split test --dets "$DETECTOR_NAME" \
+    --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+  run "detect: valid x5 ($DETECTOR_NAME)" uv run pitchview detect --split valid --limit 5 --dets "$DETECTOR_NAME" \
+    --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+}
+
 # SAM 3.1 keeps every past frame in GPU memory (~27 MB a frame), so a 750-frame clip needs
 # ~40 GB: it runs as its own stage on a 48 GB+ card, alongside training on the 4090.
 sam_steps() {
@@ -179,6 +215,7 @@ case "$stage" in
   train) train_steps ;;
   infer) infer_steps ;;
   sam) sam_steps ;;
+  retrain) retrain_steps ;;
   all)
     train_steps
     # Pick up fixes pushed while training ran.

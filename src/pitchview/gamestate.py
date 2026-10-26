@@ -28,7 +28,7 @@ class Variant:
     foot: str = "mask"  # where the player touches the grass: "mask" (lowest mask pixels) or "box" (bottom-centre)
     team_crops: str = "mask"  # jersey embeddings from "mask" or "box" crops
     jersey: bool = True
-    smooth: int = 5  # rolling-median window over a track's positions, in frames; 1 = off
+    smooth: int = 25  # rolling-median window over a track's positions, in frames; 1 = off (25 won on valid x5)
 
 
 def _majority(values) -> str | None:

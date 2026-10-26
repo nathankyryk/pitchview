@@ -1,12 +1,26 @@
+import numpy as np
 import pandas as pd
+from PIL import Image
 
 from pitchview.evaluate import jersey_summary, jersey_truth
 from pitchview.gsr import Box
-from pitchview.jersey import NOT_PLAYER_NUMBERS, load_reads, parse_number, shirt_region, vote
+from pitchview.jersey import NOT_PLAYER_NUMBERS, load_reads, parse_number, shirt_crop, shirt_region, vote
 
 
 def test_shirt_region():
     assert shirt_region((100, 200, 140, 300)) == (104, 215, 136, 260)
+
+
+def test_shirt_crop_greys_out_everything_but_the_mask():
+    image = Image.fromarray(np.full((300, 200, 3), 200, dtype=np.uint8))
+    box = (100, 200, 140, 300)  # shirt region (104, 215, 136, 260)
+    assert shirt_crop(image, box).size == (32, 45)
+    mask = np.zeros((300, 200), dtype=bool)
+    mask[:, :120] = True  # the player covers the region's left 16 columns
+    pixels = np.array(shirt_crop(image, box, mask))
+    assert (pixels[:, :16] == 200).all() and (pixels[:, 16:] == 128).all()
+    edge = shirt_crop(image, (180, 250, 220, 350), np.ones((300, 200), dtype=bool))  # runs off the image
+    assert edge.size == (32, 45) and (np.array(edge)[:, -16:] == 128).all()
 
 
 def test_parse_number():

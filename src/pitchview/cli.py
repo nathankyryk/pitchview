@@ -89,9 +89,13 @@ def _free_gb(path: Path) -> float:
 @app.command("train-detector")
 def train_detector(
     smoke: bool = False, size: str = "medium", resolution: int = 1120, epochs: int = 20,
-    batch_size: int = 4, grad_accum: int = 4, workers: int = 8,
+    batch_size: int = 4, grad_accum: int = 4, workers: int = 8, name: str = "model", lr: float = 1e-4,
+    lr_encoder: float = 1.5e-4, schedule: str = "step", warmup: float = 0.0, min_factor: float = 0.0,
+    patience: int = 5,
 ) -> None:  # fmt: skip
-    """Fine-tune RF-DETR on GSR (converted to COCO, every 5th frame)."""
+    """Fine-tune RF-DETR on GSR (converted to COCO, every 5th frame).
+    --name writes to its own folder (detector_<name>), so runs stay comparable; the defaults are
+    Sunday's run. Use the same name with `detect --dets <name>`."""
     from pitchview.coco import convert_split, make_subset
     from pitchview.detect import TrainSettings, train
 
@@ -109,8 +113,10 @@ def train_detector(
         for split, n in (("train", 8), ("valid", 4), ("test", 4)):
             make_subset(full / split, dataset / split, n)
         size, resolution, epochs, batch_size, grad_accum, workers = "nano", 384, 1, 2, 1, 0
-    train(TrainSettings(dataset_dir=dataset, output_dir=out / "detector", size=size, resolution=resolution,
-                        epochs=epochs, batch_size=batch_size, grad_accum_steps=grad_accum, num_workers=workers))  # fmt: skip
+    train(TrainSettings(dataset_dir=dataset, output_dir=out / _named("detector", name), size=size,
+                        resolution=resolution, epochs=epochs, batch_size=batch_size, grad_accum_steps=grad_accum,
+                        lr=lr, lr_encoder=lr_encoder, schedule=schedule, warmup_epochs=warmup, min_factor=min_factor,
+                        early_stopping_patience=patience, num_workers=workers))  # fmt: skip
 
 
 @app.command("train-pitch")
@@ -145,9 +151,10 @@ def _oracle_detections(clip, max_frames: int | None) -> pd.DataFrame:
 
 @app.command()
 def detect(split: str = "test", smoke: bool = False, size: str = "medium", resolution: int = 1120,
-           batch_size: int = 10, limit: int | None = None, oracle: bool = False) -> None:  # fmt: skip
+           batch_size: int = 10, limit: int | None = None, oracle: bool = False, dets: str = "model") -> None:  # fmt: skip
     """Run the fine-tuned detector over every frame of each clip.
-    --oracle writes the ground-truth boxes instead ("perfect detection", for error attribution)."""
+    --oracle writes the ground-truth boxes instead ("perfect detection", for error attribution).
+    --dets <name> uses the detector trained with `train-detector --name <name>`."""
     out = _out(smoke)
     if oracle:
         for clip in _clips(split, smoke, limit):
@@ -163,11 +170,11 @@ def detect(split: str = "test", smoke: bool = False, size: str = "medium", resol
 
     if smoke:
         size, resolution = "nano", 384
-    model = load(out / "detector" / "checkpoint_best_total.pth", size, resolution)
+    model = load(out / _named("detector", dets) / "checkpoint_best_total.pth", size, resolution)
     if torch.cuda.is_available():
         model.inference(compile=False, dtype=torch.float16)  # half precision; no trace, so any batch size works
     for clip in _clips(split, smoke, limit):
-        path = out / "detections" / split / f"{clip.name}.parquet"
+        path = out / _named("detections", dets) / split / f"{clip.name}.parquet"
         if _todo(path, clip.name):
             n = predict_clip(model, clip, path, batch_size=batch_size, max_frames=SMOKE_FRAMES if smoke else None)
             typer.echo(f"  {clip.name}: {n} boxes")
@@ -223,9 +230,14 @@ def keypoints(split: str = "test", smoke: bool = False, weights: Path | None = N
             typer.echo(f"  {clip.name}: {n} frames")
 
 
+def _named(base: str, name: str) -> str:
+    """Folder of a named variant: Sunday's detector is "model" (plain folder); others get a suffix."""
+    return base if name == "model" else f"{base}_{name}"
+
+
 def _detections(out: Path, split: str, clip, dets: str) -> pd.DataFrame:
-    folder = "detections" if dets == "model" else "detections_oracle"
-    return pq.read_table(out / folder / split / f"{clip.name}.parquet").to_pandas()
+    """dets: "model" (Sunday's detector), "oracle" (ground truth) or a re-trained detector's name."""
+    return pq.read_table(out / _named("detections", dets) / split / f"{clip.name}.parquet").to_pandas()
 
 
 def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFrame:
@@ -238,17 +250,43 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
     return tracked[tracked["class_name"] == "player"]
 
 
+JERSEY_STRIDE = 10  # read every 10th frame
+
+
+def _jersey_dir(out: Path, kind: str, tracker: str, dets: str, stride: int, crops: str = "box") -> Path:
+    """Where `jerseys` saves raw reads (kind "jersey_reads") or voted numbers ("jerseys"). Every
+    setting but the first one used (every 10th frame, box crops) gets its own folder, for comparison."""
+    suffix = ("" if stride == 10 else f"_s{stride}") + ("" if crops == "box" else f"_{crops}")
+    return out / f"{kind}_{tracker}_{dets}{suffix}"
+
+
+def _masks(path: Path, frames: set[int]) -> dict[tuple[int, int], dict]:
+    """SAM's saved masks (COCO RLE) for the given frames, by (frame, object id)."""
+    out = {}
+    with path.open() as f:
+        for line in f:
+            r = json.loads(line)
+            if r["frame"] in frames:
+                out[(r["frame"], r["obj_id"])] = {"size": r["size"], "counts": r["counts"]}
+    return out
+
+
 @app.command()
 def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack", dets: str = "model",
-            stride: int = 10, limit: int | None = None, min_conf: float = MIN_CONF, allow_one: bool = False,
-            merge_partial: bool = True) -> None:  # fmt: skip
+            stride: int = JERSEY_STRIDE, limit: int | None = None, min_conf: float = MIN_CONF,
+            allow_one: bool = False, merge_partial: bool = False, crops: str = "box") -> None:  # fmt: skip
     """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s), then vote per track.
 
     Every raw read is saved (jersey_reads_*). A clip whose reads are saved is only re-voted, in
-    seconds, so vote settings can change without reading again (tune them with jersey-score)."""
+    seconds, so vote settings can change without reading again (tune them with jersey-score).
+    --crops mask (SAM tracks only) greys out everything in the shirt crop but the player's mask."""
     from PIL import Image
+    from pycocotools import mask as mask_utils
 
-    from pitchview.jersey import NOT_PLAYER_NUMBERS, JerseyReader, load_reads, shirt_region, vote
+    from pitchview.jersey import NOT_PLAYER_NUMBERS, JerseyReader, load_reads, shirt_crop, vote
+
+    if crops not in ("box", "mask") or (crops == "mask" and tracker != "sam"):
+        raise typer.BadParameter("--crops is box, or mask with --tracker sam")
 
     out = _out(smoke)
     if smoke:
@@ -256,19 +294,25 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
     exclude = frozenset() if allow_one else NOT_PLAYER_NUMBERS
     reader = None
     for clip in _clips(split, smoke, limit):
-        path = out / f"jerseys_{tracker}_{dets}" / split / f"{clip.name}.json"
-        reads_path = out / f"jersey_reads_{tracker}_{dets}" / split / f"{clip.name}.parquet"
+        path = _jersey_dir(out, "jerseys", tracker, dets, stride, crops) / split / f"{clip.name}.json"
+        reads_path = _jersey_dir(out, "jersey_reads", tracker, dets, stride, crops) / split / f"{clip.name}.parquet"
         if reads_path.exists():
             reads = load_reads(reads_path)
         else:
             reader = reader or JerseyReader()
             tracks = _tracks(out, split, clip, tracker, dets)
             frames = {f.index: f for f in clip.frames}
+            tracks = tracks[(tracks["frame"] - 1) % stride == 0]
+            mask_path = out / "sam_masks" / split / f"{clip.name}.jsonl"
+            masks = _masks(mask_path, set(tracks["frame"])) if crops == "mask" else {}
             raw = []
-            for frame, rows in tracks[(tracks["frame"] - 1) % stride == 0].groupby("frame"):
+            for frame, rows in tracks.groupby("frame"):
                 image = Image.open(frames[int(frame)].path)
-                crops = [image.crop(shirt_region(b)) for b in rows[["x1", "y1", "x2", "y2"]].itertuples(index=False)]
-                for tid, (number, conf) in zip(rows["track_id"], reader.read(crops)):
+                shirts = []
+                for tid, box in zip(rows["track_id"], rows[["x1", "y1", "x2", "y2"]].itertuples(index=False)):
+                    rle = masks.get((int(frame), int(tid)))
+                    shirts.append(shirt_crop(image, box, mask_utils.decode(rle).astype(bool) if rle else None))
+                for tid, (number, conf) in zip(rows["track_id"], reader.read(shirts)):
                     raw.append((int(tid), int(frame), number, conf))
             reads_path.parent.mkdir(parents=True, exist_ok=True)
             table = pd.DataFrame(raw, columns=["track_id", "frame", "number", "conf"])
@@ -349,7 +393,7 @@ def detector_score(split: str = "test", dets: str = "model", limit: int | None =
 
 @app.command("jersey-score")
 def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
-                 min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, merge_partial: bool = True,
+                 stride: int = JERSEY_STRIDE, crops: str = "box", min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, merge_partial: bool = False,
                  grid: bool = False) -> None:  # fmt: skip
     """Score per-track jersey numbers against ground truth, re-voting from the saved raw reads.
     --grid tries a range of vote settings. Tune on valid, then report the chosen one on test."""
@@ -358,7 +402,7 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
 
     clips = []
     for clip in _clips(split, False, limit):
-        reads_path = OUT / f"jersey_reads_{tracker}_{dets}" / split / f"{clip.name}.parquet"
+        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, stride, crops) / split / f"{clip.name}.parquet"
         if reads_path.exists():
             clips.append((load_reads(reads_path), jersey_truth(_tracks(OUT, split, clip, tracker, dets), clip)))
     if not clips:
@@ -388,8 +432,9 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
 @app.command()
 def assemble(
     split: str = "test", smoke: bool = False, name: str = "main", tracker: str = "bytetrack", foot: str = "mask",
-    team_crops: str = "mask", jersey: bool = True, smooth: int = 5, pitch: str = "finetuned", dets: str = "model",
-    limit: int | None = None, pitch_check: bool = True,
+    team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
+    limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
+    jersey_crops: str = "box",
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -414,7 +459,8 @@ def assemble(
             Hs = frame_homographies(kp)
             if pitch_check:
                 Hs = checked_homographies(Hs, width=clip.frames[0].width, height=clip.frames[0].height)
-        jersey_path = out / f"jerseys_{tracker}_{dets}" / split / f"{clip.name}.json"
+        jersey_dir = _jersey_dir(out, "jerseys", tracker, dets, jersey_stride, jersey_crops)
+        jersey_path = jersey_dir / split / f"{clip.name}.json"
         numbers = {int(k): v for k, v in json.loads(jersey_path.read_text()).items()} if jersey_path.exists() else None
         state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v)
         state_path = out / "gamestate" / name / split / f"{clip.name}.parquet"
@@ -444,19 +490,47 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
 
 
 @app.command("eval")
-def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: int | None = None) -> None:
-    """GS-HOTA for each named run, plus tracking-only HOTA (role, team and jersey checks off)."""
+def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: int | None = None,
+             detail: bool = False, save: Path | None = None) -> None:  # fmt: skip
+    """GS-HOTA for each named run, plus tracking-only HOTA (role, team and jersey checks off).
+
+    --detail adds the error breakdown: GS-HOTA with each attribute check switched off in turn (the
+    gain is what that attribute's mistakes cost), and the tracking errors behind track-HOTA: missed
+    and extra people (DetRe, DetPr), split and merged tracks (AssRe, AssPr), IDF1 and ID switches.
+    --save writes every score, per clip too, to a JSON file."""
     from pitchview.evaluate import gs_hota
 
     out = _out(smoke)
     clips = [c.name for c in _clips(split, smoke, limit)]
+    off = {"use_jersey": False, "use_teams": False, "use_roles": False}
+    report = {}
     typer.echo(f"{'run':28s} {'GS-HOTA':>8s} {'DetA':>6s} {'AssA':>6s} {'track-HOTA':>11s}")
     for name in names:
-        full = gs_hota(DEFAULT_ROOT, out / "trackers", split, name, clips)
-        bare = gs_hota(DEFAULT_ROOT, out / "trackers", split, name, clips, use_jersey=False, use_teams=False,
-                       use_roles=False)  # fmt: skip
+        row = {
+            "gs": gs_hota(DEFAULT_ROOT, out / "trackers", split, name, clips, per_clip=True),
+            "track": gs_hota(DEFAULT_ROOT, out / "trackers", split, name, clips, per_clip=True, detail=detail, **off),
+        }
+        if detail:
+            for check in off:
+                row[f"no_{check[4:]}"] = gs_hota(DEFAULT_ROOT, out / "trackers", split, name, clips, **{check: False})
+        report[name] = row
+        full, bare = row["gs"], row["track"]
         typer.echo(f"{name:28s} {full['HOTA']:8.1f} {full['DetA']:6.1f} {full['AssA']:6.1f} {bare['HOTA']:11.1f}")
-
+    if detail:
+        typer.echo("\nGS-HOTA with one check off, then the tracking-only errors")
+        typer.echo(f"{'run':28s} {'-jersey':>7s} {'-team':>6s} {'-role':>6s} {'DetRe':>6s} {'DetPr':>6s} {'AssRe':>6s} "
+                   f"{'AssPr':>6s} {'LocA':>5s} {'IDF1':>5s} {'IDSW':>5s}")  # fmt: skip
+        for name, row in report.items():
+            t = row["track"]
+            typer.echo(
+                f"{name:28s} {row['no_jersey']['HOTA']:7.1f} {row['no_teams']['HOTA']:6.1f} {row['no_roles']['HOTA']:6.1f} "
+                f"{t['DetRe']:6.1f} {t['DetPr']:6.1f} {t['AssRe']:6.1f} {t['AssPr']:6.1f} {t['LocA']:5.1f} "
+                f"{t['IDF1']:5.1f} {t['IDSW']:5d}"
+            )
+    if save:
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_text(json.dumps({"split": split, "clips": clips, "runs": report}, indent=1))
+        typer.echo(f"saved {save}")
 
 if __name__ == "__main__":
     app()

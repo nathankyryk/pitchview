@@ -48,6 +48,10 @@ class TrainSettings:
     batch_size: int = 4
     grad_accum_steps: int = 4  # effective batch 16, the size RF-DETR recommends
     lr: float = 1e-4
+    lr_encoder: float = 1.5e-4  # RF-DETR's default for the backbone
+    schedule: str = "step"  # RF-DETR's default; its first drop is at epoch 100, so the rate stays flat
+    warmup_epochs: float = 0.0
+    min_factor: float = 0.0  # cosine: the rate ends at lr * min_factor
     num_workers: int = 8
     early_stopping_patience: int = 5
 
@@ -61,6 +65,10 @@ def train(s: TrainSettings) -> None:
         batch_size=s.batch_size,
         grad_accum_steps=s.grad_accum_steps,
         lr=s.lr,
+        lr_encoder=s.lr_encoder,
+        lr_scheduler=s.schedule,
+        lr_scheduler_kwargs={"min_factor": s.min_factor} if s.schedule == "cosine" else {},
+        warmup_epochs=s.warmup_epochs,
         num_workers=s.num_workers,
         checkpoint_interval=1,  # a crash or a stopped pod loses at most one epoch
         log_per_class_metrics=True,  # the ball gets its own mAP
