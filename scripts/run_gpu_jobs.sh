@@ -7,8 +7,9 @@
 #   bash scripts/run_gpu_jobs.sh all     # unattended, on the 4090: train, then infer, then the pod stops
 #   bash scripts/run_gpu_jobs.sh sam     # unattended, on a 48 GB+ card: SAM 3.1 masks and tracks
 #   bash scripts/run_gpu_jobs.sh retrain # unattended, ~3 h on a 24 GB+ card: detector v2, its detections, speed table
+#   bash scripts/run_gpu_jobs.sh yolo    # unattended, ~2 h on a 24 GB+ card: YOLO26 on the same data, its detections, speed
 #
-# train, infer, sam and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
+# Every stage but check re-launches themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
 # job never bills overnight. Every step is timed; a failed step doesn't stop the others.
 # Logs and outputs live on the volume: /workspace/logs and /workspace/pitchview/outputs.
@@ -19,13 +20,14 @@
 #   NO_STOP=1 keeps the pod running after train/infer
 #   retrain only: DETECTOR_NAME=v2 DETECTOR_LR=5e-5 DETECTOR_LR_ENCODER=7.5e-5 DETECTOR_SCHEDULE=cosine
 #     DETECTOR_WARMUP=1 DETECTOR_MIN_FACTOR=0.05 DETECTOR_PATIENCE=10, and DETECTOR_RES=1280
+#   yolo only: YOLO_NAME=yolo26 YOLO_MODEL=yolo26m.pt YOLO_IMGSZ=1280 YOLO_EPOCHS=12 YOLO_BATCH=8
 
 set -euo pipefail
 
 stage="${1:-}"
 case "$stage" in
-  check | train | infer | sam | all | retrain) ;;
-  *) echo "usage: $0 check|train|infer|sam|all|retrain" >&2; exit 2 ;;
+  check | train | infer | sam | all | retrain | yolo) ;;
+  *) echo "usage: $0 check|train|infer|sam|all|retrain|yolo" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/pod_env.sh
@@ -59,6 +61,12 @@ DETECTOR_EPOCHS="${DETECTOR_EPOCHS:-20}"
 PITCH_EPOCHS="${PITCH_EPOCHS:-20}"
 MASK_CLIPS="${MASK_CLIPS:-49}"  # test clips whose full masks are kept (test has 49)
 NO_STOP="${NO_STOP:-0}"
+# yolo: the second specialist, on detector v2's data, resolution and epochs
+YOLO_NAME="${YOLO_NAME:-yolo26}"
+YOLO_MODEL="${YOLO_MODEL:-yolo26m.pt}"
+YOLO_IMGSZ="${YOLO_IMGSZ:-1280}"
+YOLO_EPOCHS="${YOLO_EPOCHS:-12}"
+YOLO_BATCH="${YOLO_BATCH:-8}"
 
 # Long stages: re-launch inside tmux, passing the settings explicitly (a running tmux
 # server would otherwise hand the new session its own, older environment).
@@ -72,7 +80,8 @@ if [ "$stage" != check ] && [ -z "${INSIDE_JOB:-}" ]; then
 DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PITCH_EPOCHS MASK_CLIPS=$MASK_CLIPS NO_STOP=$NO_STOP \
 DETECTOR_NAME=$DETECTOR_NAME DETECTOR_LR=$DETECTOR_LR DETECTOR_LR_ENCODER=$DETECTOR_LR_ENCODER \
 DETECTOR_SCHEDULE=$DETECTOR_SCHEDULE DETECTOR_WARMUP=$DETECTOR_WARMUP DETECTOR_MIN_FACTOR=$DETECTOR_MIN_FACTOR \
-DETECTOR_PATIENCE=$DETECTOR_PATIENCE bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
+DETECTOR_PATIENCE=$DETECTOR_PATIENCE YOLO_NAME=$YOLO_NAME YOLO_MODEL=$YOLO_MODEL YOLO_IMGSZ=$YOLO_IMGSZ \
+YOLO_EPOCHS=$YOLO_EPOCHS YOLO_BATCH=$YOLO_BATCH bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
   echo "Started '$stage' in tmux. Watch it: tmux attach -t $stage   (leave it running: Ctrl-b then d)"
   echo "Status so far: cat $LOG_DIR/${stage}_status.txt"
   exit 0
@@ -176,6 +185,22 @@ retrain_steps() {
     --save "outputs/bench/bench_${gpu}.json"
 }
 
+# YOLO26 (Ultralytics, COCO-pretrained) on the frames RF-DETR trained on, for the accuracy-vs-speed
+# table and a second specialist in the viewer. Ultralytics' defaults otherwise (SGD/auto optimizer,
+# mosaic); the frames are converted once to YOLO's layout on local disk (data/yolo_gsr).
+yolo_steps() {
+  run "train $YOLO_NAME ($YOLO_MODEL, $YOLO_EPOCHS epochs, $YOLO_IMGSZ px)" uv run pitchview train-yolo \
+    --name "$YOLO_NAME" --model "$YOLO_MODEL" --imgsz "$YOLO_IMGSZ" --epochs "$YOLO_EPOCHS" --batch "$YOLO_BATCH"
+  run "detect: test ($YOLO_NAME)" uv run pitchview detect --split test --dets "$YOLO_NAME" --resolution "$YOLO_IMGSZ"
+  run "detect: valid x5 ($YOLO_NAME)" uv run pitchview detect --split valid --limit 5 --dets "$YOLO_NAME" \
+    --resolution "$YOLO_IMGSZ"
+  # Sunday's RF-DETR again as the reference, so this table lines up with the retrain stage's (SAM is there)
+  local gpu
+  gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '_')
+  run "speed benchmark" uv run pitchview bench --detectors model:1120 --detectors "$YOLO_NAME:$YOLO_IMGSZ" --no-sam \
+    --save "outputs/bench/bench_${gpu}_yolo.json"
+}
+
 # SAM 3.1 keeps every past frame in GPU memory (~27 MB a frame), so a 750-frame clip needs
 # ~40 GB: it runs as its own stage on a 48 GB+ card, alongside training on the 4090.
 sam_steps() {
@@ -221,6 +246,7 @@ case "$stage" in
   infer) infer_steps ;;
   sam) sam_steps ;;
   retrain) retrain_steps ;;
+  yolo) yolo_steps ;;
   all)
     train_steps
     # Pick up fixes pushed while training ran.

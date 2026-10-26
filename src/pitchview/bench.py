@@ -80,10 +80,12 @@ def bench_detector(model, images: list, warmup: int, threshold: float = 0.1) -> 
     return time_per_frame(lambda i: model.predict(images[i], threshold=threshold), len(images), warmup)
 
 
-def bench_pitch(model, images: list, warmup: int, device: str | None) -> dict:
-    """The YOLOv8-pose pitch-keypoint model, one image per call."""
-    precision = {} if device == "cpu" else {"quantize": "fp16"}  # Ultralytics 8.4 replaced half=True
-    return time_per_frame(lambda i: model.predict(images[i], verbose=False, device=device, **precision), len(images), warmup)
+def bench_ultralytics(model, images: list, warmup: int, device: str | None, imgsz: int | None = None) -> dict:
+    """An Ultralytics model (the pitch-keypoint model, YOLO26), one image per call."""
+    options = {} if device == "cpu" else {"quantize": "fp16"}  # Ultralytics 8.4 replaced half=True
+    if imgsz:
+        options["imgsz"] = imgsz
+    return time_per_frame(lambda i: model.predict(images[i], verbose=False, device=device, **options), len(images), warmup)
 
 
 def bench_reader(reader, images: list, boxes: list[list], warmup: int) -> dict:

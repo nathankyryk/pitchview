@@ -91,6 +91,25 @@ def _free_gb(path: Path) -> float:
     return shutil.disk_usage(path).free / 1e9
 
 
+def _detector_dataset(out: Path, smoke: bool) -> Path:
+    """GSR in COCO layout, the detectors' training set (converted on first use)."""
+    from pitchview.coco import convert_split, make_subset
+
+    full = Path("data/rfdetr_gsr")
+    # The detectors score themselves on `valid` after every epoch: every 25th frame (1,740 images)
+    # keeps that to about a minute. Final accuracy is measured separately on the test split.
+    for split, stride in (("train", 5), ("valid", 25), ("test", 25)):
+        if not (full / split / "_annotations.coco.json").exists():
+            typer.echo(f"converting {split} to COCO (every {stride}th frame)")
+            convert_split(DEFAULT_ROOT, split, full / split, stride=stride)
+    if not smoke:
+        return full
+    subset = out / "rfdetr_subset"
+    for split, n in (("train", 8), ("valid", 4), ("test", 4)):
+        make_subset(full / split, subset / split, n)
+    return subset
+
+
 @app.command("train-detector")
 def train_detector(
     smoke: bool = False, size: str = "medium", resolution: int = 1120, epochs: int = 20,
@@ -101,27 +120,33 @@ def train_detector(
     """Fine-tune RF-DETR on GSR (converted to COCO, every 5th frame).
     --name writes to its own folder (detector_<name>), so runs stay comparable; the defaults are
     Sunday's run. Use the same name with `detect --dets <name>`."""
-    from pitchview.coco import convert_split, make_subset
     from pitchview.detect import TrainSettings, train
 
     out = _out(smoke)
-    full = Path("data/rfdetr_gsr")
-    # RF-DETR scores itself on `valid` after every epoch: every 25th frame (1,740 images)
-    # keeps that to about a minute. Final accuracy is measured separately on the test split.
-    for split, stride in (("train", 5), ("valid", 25), ("test", 25)):
-        if not (full / split / "_annotations.coco.json").exists():
-            typer.echo(f"converting {split} to COCO (every {stride}th frame)")
-            convert_split(DEFAULT_ROOT, split, full / split, stride=stride)
-    dataset = full
+    dataset = _detector_dataset(out, smoke)
     if smoke:
-        dataset = out / "rfdetr_subset"
-        for split, n in (("train", 8), ("valid", 4), ("test", 4)):
-            make_subset(full / split, dataset / split, n)
         size, resolution, epochs, batch_size, grad_accum, workers = "nano", 384, 1, 2, 1, 0
     train(TrainSettings(dataset_dir=dataset, output_dir=out / _named("detector", name), size=size,
                         resolution=resolution, epochs=epochs, batch_size=batch_size, grad_accum_steps=grad_accum,
                         lr=lr, lr_encoder=lr_encoder, schedule=schedule, warmup_epochs=warmup, min_factor=min_factor,
                         early_stopping_patience=patience, num_workers=workers))  # fmt: skip
+
+
+@app.command("train-yolo")
+def train_yolo(smoke: bool = False, name: str = "yolo26", model: str = "yolo26m.pt", imgsz: int = 1280,
+               epochs: int = 12, batch: int = 8, patience: int = 10, workers: int = 8) -> None:  # fmt: skip
+    """Train YOLO26 on the detectors' training frames (the second specialist, for the speed table).
+    Writes detector_<name>/weights/best.pt; then `detect --dets <name>`."""
+    from pitchview.yolo import YoloSettings, convert, train
+
+    out = _out(smoke)
+    coco = _detector_dataset(out, smoke)
+    data_yaml = convert(coco, out / "yolo_subset" if smoke else Path("data/yolo_gsr"))
+    if smoke:
+        model, imgsz, epochs, batch, workers = "yolo26n.pt", 320, 1, 2, 0
+    best = train(YoloSettings(data_yaml, out / _named("detector", name), model, imgsz, epochs, batch, patience,
+                              workers, device="cpu" if smoke else None))  # fmt: skip
+    typer.echo(f"best weights: {best}")
 
 
 @app.command("train-pitch")
@@ -159,7 +184,8 @@ def detect(split: str = "test", smoke: bool = False, size: str = "medium", resol
            batch_size: int = 10, limit: int | None = None, oracle: bool = False, dets: str = "model") -> None:  # fmt: skip
     """Run the fine-tuned detector over every frame of each clip.
     --oracle writes the ground-truth boxes instead ("perfect detection", for error attribution).
-    --dets <name> uses the detector trained with `train-detector --name <name>`."""
+    --dets <name> uses the detector trained with `train-detector --name <name>`; a name starting
+    with "yolo" uses `train-yolo`'s weights (pass its --resolution, e.g. 1280)."""
     out = _out(smoke)
     if oracle:
         for clip in _clips(split, smoke, limit):
@@ -173,6 +199,20 @@ def detect(split: str = "test", smoke: bool = False, size: str = "medium", resol
 
     from pitchview.detect import load, predict_clip
 
+    if dets.startswith("yolo"):
+        from ultralytics import YOLO
+
+        from pitchview.yolo import predict_clip as yolo_predict
+
+        yolo = YOLO(str(out / _named("detector", dets) / "weights" / "best.pt"))
+        device = "cpu" if smoke or not torch.cuda.is_available() else None
+        for clip in _clips(split, smoke, limit):
+            path = out / _named("detections", dets) / split / f"{clip.name}.parquet"
+            if _todo(path, clip.name):
+                n = yolo_predict(yolo, clip, path, imgsz=320 if smoke else resolution, batch_size=batch_size,
+                                 max_frames=SMOKE_FRAMES if smoke else None, device=device)  # fmt: skip
+                typer.echo(f"  {clip.name}: {n} boxes")
+        return
     if smoke:
         size, resolution = "nano", 384
     model = load(out / _named("detector", dets) / "checkpoint_best_total.pth", size, resolution)
@@ -544,12 +584,13 @@ def _torch_module(model):
 def bench(smoke: bool = False, frames: int = 200, warmup: int = 20, clip: str | None = None,
           detectors: list[str] | None = None, sam: bool = True, save: Path | None = None) -> None:  # fmt: skip
     """Speed of each model on this machine's GPU: one frame at a time, half precision, after a
-    warm-up, on frames already decoded in memory. --detectors name:resolution (repeatable), e.g.
+    warm-up, on frames already decoded in memory. --detectors name:resolution (repeatable; names
+    starting with "yolo" are train-yolo's), e.g.
     model:1120 (Sunday's RF-DETR, the default) and v2:1280. SAM 3.1 tracks the clip's first --frames frames."""
     import torch
     from PIL import Image
 
-    from pitchview.bench import bench_detector, bench_pitch, bench_reader, bench_sam, parameters, size_mb
+    from pitchview.bench import bench_detector, bench_reader, bench_sam, bench_ultralytics, parameters, size_mb
     from pitchview.detect import load
     from pitchview.jersey import JerseyReader
     from pitchview.pitch import PitchModel
@@ -577,8 +618,21 @@ def bench(smoke: bool = False, frames: int = 200, warmup: int = 20, clip: str | 
         rows[name] = result
         typer.echo(f"  {name}: {result['fps']:.1f} fps, peak {result['peak_memory_gb'] or 0:.1f} GB")
 
+    device = None if cuda else "cpu"
     for spec in detectors:
         name, _, res = spec.partition(":")
+        if name.startswith("yolo"):
+            from ultralytics import YOLO
+
+            weights = out / _named("detector", name) / "weights" / "best.pt"
+            if not weights.is_file():
+                typer.echo(f"  skip {name}: no {weights}")
+                continue
+            imgsz = 320 if smoke else int(res or 1280)
+            yolo = YOLO(str(weights))
+            add(f"YOLO26 {name} ({imgsz} px)", bench_ultralytics(yolo, images, warmup, device, imgsz), yolo, weights)
+            del yolo
+            continue
         weights = out / _named("detector", name) / "checkpoint_best_total.pth"
         if not weights.is_file():
             typer.echo(f"  skip RF-DETR {name}: no {weights}")
@@ -592,9 +646,9 @@ def bench(smoke: bool = False, frames: int = 200, warmup: int = 20, clip: str | 
 
     pitch_weights = out / "pitch_model" / "weights" / "best.pt"
     pitch_weights = pitch_weights if pitch_weights.is_file() else PITCH_BASE
-    device = None if cuda else "cpu"
     pitch = PitchModel(pitch_weights, device=device)
-    add("pitch keypoints (YOLOv8x-pose)", bench_pitch(pitch.model, images, warmup, device), pitch.model, pitch_weights)
+    add("pitch keypoints (YOLOv8x-pose)", bench_ultralytics(pitch.model, images, warmup, device), pitch.model,
+        pitch_weights)  # fmt: skip
     del pitch
 
     reader = JerseyReader()
