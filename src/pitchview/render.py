@@ -5,6 +5,10 @@
 - A nametag sits above each player: "#?" until the video first reads their number, then the
   name from the clip's roster ("L. Messi"), or "#10" when the roster has no name.
 - A radar in the corner shows everyone on a 105 x 68 m pitch, plus the ball.
+
+style="tracks" draws perception only, for the viewer's specialist and foundation tabs: each box or
+mask in its role's colour (or its track's, when there is no role) with an "id N" tag, and no
+teams, numbers or radar.
 """
 
 from __future__ import annotations
@@ -25,6 +29,11 @@ REFEREE = (250, 204, 21)  # yellow
 UNKNOWN = (170, 170, 170)  # grey: no team yet
 FALLBACK_KITS = {"left": (66, 133, 244), "right": (234, 67, 53)}
 MASK_ALPHA = 0.5
+ROLE_COLOURS = {"player": (66, 165, 245), "goalkeeper": (186, 104, 200), "referee": REFEREE, "ball": (255, 152, 0)}
+TRACK_PALETTE = [(230, 25, 75), (60, 180, 75), (255, 225, 25), (0, 130, 200), (245, 130, 48), (145, 30, 180),
+                 (70, 240, 240), (240, 50, 230), (210, 245, 60), (250, 190, 212), (0, 128, 128), (220, 190, 255),
+                 (170, 110, 40), (255, 250, 200), (128, 0, 0), (170, 255, 195)]  # fmt: skip
+STATE_DEFAULTS = {"team": None, "jersey": None, "x_m": np.nan, "y_m": np.nan, "sam_obj_id": -1}
 
 
 def short_name(full: str) -> str:
@@ -53,6 +62,36 @@ def tag_text(role: str, team: str | None, number: str | None, revealed: bool, ro
         return "#?"
     name = roster.get(team or "", {}).get(str(number))
     return short_name(name) if name else f"#{number}"
+
+
+def track_colour(role: str, track_id: int) -> tuple[int, int, int]:
+    """tracks style: the role's colour, or one per track when there is no role (SAM's "person")."""
+    return ROLE_COLOURS.get(role) or TRACK_PALETTE[int(track_id) % len(TRACK_PALETTE)]
+
+
+def truth_state(boxes: list) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The ground-truth labels as a game state (people) and ball positions, for the truth tab."""
+    people = [b for b in boxes if b.role != "ball" and b.track_id is not None]
+    state = pd.DataFrame(
+        {
+            "frame": [b.frame for b in people],
+            "track_id": [b.track_id for b in people],
+            "role": [b.role for b in people],
+            "team": pd.Series([b.team for b in people], dtype=object),
+            "jersey": pd.Series([b.jersey for b in people], dtype=object),
+            "x_m": [np.nan if b.pitch_x is None else b.pitch_x for b in people],
+            "y_m": [np.nan if b.pitch_y is None else b.pitch_y for b in people],
+            "x1": [b.x for b in people],
+            "y1": [b.y for b in people],
+            "x2": [b.x + b.w for b in people],
+            "y2": [b.y + b.h for b in people],
+            "sam_obj_id": -1,
+        }
+    )
+    balls = [b for b in boxes if b.role == "ball" and b.pitch_x is not None]
+    ball = pd.DataFrame({"frame": [b.frame for b in balls], "x_m": [b.pitch_x for b in balls],
+                         "y_m": [b.pitch_y for b in balls]})  # fmt: skip
+    return state, ball
 
 
 def first_reads(reads: pd.DataFrame, numbers: dict, min_conf: float) -> dict[int, int]:
@@ -195,14 +234,21 @@ def render_clip(
     backfill: bool = False,
     title: str = "",
     max_frames: int | None = None,
+    style: str = "full",
 ) -> int:
-    """Write the annotated clip as H.264 MP4. Returns the number of frames written."""
+    """Write the annotated clip as H.264 MP4. Returns the number of frames written.
+    style "full": team colours, nametags and the radar; "tracks": perception only (see the module notes)."""
     import av
     from pycocotools import mask as mask_utils
 
     frames = frames[:max_frames] if max_frames else frames
-    sample = {f.index: np.asarray(Image.open(f.path).convert("RGB")) for f in frames[:: max(1, len(frames) // 25)]}
-    kits = kit_colours(sample, state)
+    state = state.assign(**{c: v for c, v in STATE_DEFAULTS.items() if c not in state})
+    tracks_only = style == "tracks"
+    if tracks_only:
+        kits: dict = {}
+    else:
+        sample = {f.index: np.asarray(Image.open(f.path).convert("RGB")) for f in frames[:: max(1, len(frames) // 25)]}
+        kits = kit_colours(sample, state)
     placed = anchors(state)
     by_frame = {f: rows for f, rows in placed.groupby("frame")}
     ball_at = {} if ball is None else {int(r.frame): (r.x_m, r.y_m) for r in ball.itertuples(index=False)}
@@ -210,7 +256,9 @@ def render_clip(
     tag_font = ImageFont.load_default(size=22)
     title_font = ImageFont.load_default(size=24)
 
-    def colour_of(role: str, team: str | None) -> tuple[int, int, int]:
+    def colour_of(role: str, team: str | None, track_id: int) -> tuple[int, int, int]:
+        if tracks_only:
+            return track_colour(role, track_id)
         if role == "referee":
             return REFEREE
         return kits.get(team, UNKNOWN) if team in kits else UNKNOWN
@@ -228,7 +276,7 @@ def render_clip(
         people, tags = [], []
         if rows is not None:
             for r in rows.itertuples(index=False):
-                colour = colour_of(r.role, r.team)
+                colour = colour_of(r.role, r.team, r.track_id)
                 rle = masks.get((f.index, int(r.sam_obj_id))) if r.sam_obj_id >= 0 else None
                 if rle is not None:
                     blend_mask(img, mask_utils.decode(rle).astype(bool), colour)
@@ -236,7 +284,10 @@ def render_clip(
                     cv2.rectangle(img, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, 2)
                 number = r.jersey if isinstance(r.jersey, str) and r.jersey else None
                 revealed = backfill or (int(r.track_id) in first_frame and f.index >= first_frame[int(r.track_id)])
-                text = tag_text(r.role, r.team, number, revealed, roster)
+                if tracks_only:
+                    text = None if r.role == "ball" else f"id {int(r.track_id)}"
+                else:
+                    text = tag_text(r.role, r.team, number, revealed, roster)
                 if text:
                     tags.append((r.ax, r.ay, colour, text))
                 people.append((r.x_m, r.y_m, colour, number if revealed else None))
@@ -252,12 +303,13 @@ def render_clip(
             draw.rounded_rectangle([16, 16, 30 + draw.textlength(title, font=title_font), 54], radius=6, fill=(0, 0, 0))
             draw.text((23, 35), title, fill=(255, 255, 255), font=title_font, anchor="lm")
         frame_out = np.asarray(canvas).copy()
-        pane = radar.draw(people, ball_at.get(f.index))
-        ph, pw = pane.shape[:2]
-        y0, x0 = height - ph - 16, width - pw - 16
-        frame_out[y0 : y0 + ph, x0 : x0 + pw] = (frame_out[y0 : y0 + ph, x0 : x0 + pw] * 0.15 + pane * 0.85).astype(
-            np.uint8
-        )
+        if not tracks_only:
+            pane = radar.draw(people, ball_at.get(f.index))
+            ph, pw = pane.shape[:2]
+            y0, x0 = height - ph - 16, width - pw - 16
+            frame_out[y0 : y0 + ph, x0 : x0 + pw] = (
+                frame_out[y0 : y0 + ph, x0 : x0 + pw] * 0.15 + pane * 0.85
+            ).astype(np.uint8)
         for packet in stream.encode(av.VideoFrame.from_ndarray(frame_out, format="rgb24")):
             container.mux(packet)
     for packet in stream.encode():

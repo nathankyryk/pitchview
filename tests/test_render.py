@@ -87,3 +87,27 @@ def test_radar_puts_the_camera_side_at_the_bottom():
     assert radar.px(52.5, 34) == (535, 350)
     pane = radar.draw([(0.0, 0.0, (255, 0, 0), "10")], ball=(10.0, 5.0))
     assert pane.shape == (360, 545, 3)
+
+
+def test_truth_state_turns_labels_into_a_game_state():
+    from pitchview.gsr import Box
+    from pitchview.render import truth_state
+
+    boxes = [
+        Box(1, 5, 1, "player", "left", "10", 10, 20, 30, 40, 1.0, 2.0),
+        Box(1, None, 7, "other", None, None, 0, 0, 5, 5, None, None),  # no track: skipped
+        Box(1, 9, 4, "ball", None, None, 50, 50, 4, 4, 3.0, -1.0),
+    ]
+    state, ball = truth_state(boxes)
+    assert state[["track_id", "role", "team", "jersey", "x1", "y2", "x_m"]].values.tolist() == [
+        [5, "player", "left", "10", 10, 60, 1.0]
+    ]
+    assert ball.values.tolist() == [[1, 3.0, -1.0]]
+
+
+def test_track_colour_uses_the_role_then_the_track():
+    from pitchview.render import ROLE_COLOURS, TRACK_PALETTE, track_colour
+
+    assert track_colour("referee", 3) == ROLE_COLOURS["referee"]
+    assert track_colour("person", 3) == TRACK_PALETTE[3]
+    assert track_colour("person", 3 + len(TRACK_PALETTE)) == TRACK_PALETTE[3]

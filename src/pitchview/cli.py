@@ -543,14 +543,20 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
 @app.command()
 def render(clips: list[str], split: str = "test", run: str = "main", tracker: str = "bytetrack",
            dets: str = "model", backfill: bool = False, max_frames: int | None = None,
-           out_dir: Path = OUT / "videos") -> None:  # fmt: skip
+           out_dir: Path = OUT / "videos", tab: str = "full") -> None:  # fmt: skip
     """Annotated MP4 of each clip: team-coloured masks, nametags and a radar.
 
     Nametags show "#?" until the number is first read, then the name from rosters/<clip>.json
     ("L. Messi"), or "#10" without one; --backfill labels each track from its first frame.
-    Needs the run's game state (`assemble`), SAM's saved masks and the jersey reads."""
+    Needs the run's game state (`assemble`), SAM's saved masks and the jersey reads.
+    --tab picks the viewer tab: full (this run), truth (the labels), specialist (--dets boxes with
+    ByteTrack ids) or foundation (SAM 3.1's own masks and tracks). Videos go to <out-dir>/<run or tab>/."""
     from pitchview.render import first_reads, load_roster, render_clip
 
+    if tab != "full":
+        for clip in _clips(split, False, None, clips):
+            _render_tab(clip, split, tab, dets, max_frames, out_dir / tab / f"{clip.name}.mp4")
+        return
     for clip in _clips(split, False, None, clips):
         state = pd.read_parquet(OUT / "gamestate" / run / split / f"{clip.name}.parquet")
         if "sam_obj_id" not in state:
@@ -567,6 +573,37 @@ def render(clips: list[str], split: str = "test", run: str = "main", tracker: st
         n = render_clip(clip.frames, state, masks, ball, roster, first, path, clip.fps, backfill,
                         title=f"PitchView  |  {clip.name}", max_frames=max_frames)  # fmt: skip
         typer.echo(f"  {clip.name}: {n} frames -> {path} ({len(roster.get('left', {})) + len(roster.get('right', {}))} names)")
+
+
+TAB_TITLES = {
+    "truth": "Ground truth (SoccerNet labels)",
+    "specialist": "Specialist: fine-tuned RF-DETR + ByteTrack",
+    "foundation": "Foundation: SAM 3.1, untrained",
+}
+
+
+def _render_tab(clip, split: str, tab: str, dets: str, max_frames: int | None, path: Path) -> None:
+    """The viewer's other tabs: the labels, the specialist's tracked boxes, or SAM 3.1 on its own."""
+    from pitchview.render import load_roster, render_clip, truth_state
+    from pitchview.track import bytetrack
+
+    masks, ball, roster, style = {}, None, {}, "tracks"
+    if tab == "truth":
+        state, ball = truth_state(clip.boxes)
+        roster, style = load_roster(Path("rosters") / f"{clip.name}.json"), "full"
+    elif tab == "specialist":
+        state = bytetrack(_detections(OUT, split, clip, dets), len(clip.frames), clip.fps)
+        state = state.rename(columns={"class_name": "role"})
+    elif tab == "foundation":
+        state = pq.read_table(OUT / "sam" / split / f"{clip.name}.parquet").to_pandas()
+        state = state.assign(track_id=state["obj_id"], sam_obj_id=state["obj_id"], role="person")
+        mask_path = OUT / "sam_masks" / split / f"{clip.name}.jsonl"
+        masks = _masks(mask_path, {f.index for f in clip.frames}) if mask_path.exists() else {}
+    else:
+        raise typer.Exit(f"unknown tab {tab}: full, truth, specialist or foundation")
+    n = render_clip(clip.frames, state, masks, ball, roster, {}, path, clip.fps, backfill=True,
+                    title=f"{TAB_TITLES[tab]}  |  {clip.name}", max_frames=max_frames, style=style)  # fmt: skip
+    typer.echo(f"  {clip.name}: {n} frames -> {path}")
 
 
 def _torch_module(model):
@@ -799,10 +836,12 @@ def _no_nan(value):
 
 
 @app.command()
-def bundle(clips: list[str], run: str = "main", split: str = "test", out: Path = Path("demo"),
-           results: list[Path] | None = None) -> None:  # fmt: skip
-    """Collect the viewer's files: each clip's rendered video (rendered first if missing), its
-    scores from `eval --save` JSON files (later files win) and its match stats. Then `pitchview viewer`."""
+def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str = "test", out: Path = Path("demo"),
+           results: list[Path] | None = None, tabs: list[str] | None = None) -> None:  # fmt: skip
+    """Collect the viewer's files: each clip's video per tab (rendered first if missing), its
+    scores from `eval --save` JSON files (later files win) and its match stats. Then `pitchview viewer`.
+    --tabs (repeatable): full, truth, specialist, foundation; all four by default. The foundation tab's
+    score is --sam-run's: the full system with SAM 3.1's tracks."""
     from pitchview.analytics import summarise
 
     runs: dict = {}
@@ -818,16 +857,19 @@ def bundle(clips: list[str], run: str = "main", split: str = "test", out: Path =
             "gs_hota": runs[run]["gs"]["HOTA"],
             "baseline": baseline.get("HOTA"),
         },
-        "tabs": {"full": run},
+        "tabs": {"full": run, "foundation": sam_run},
         "clips": {},
     }
     for clip in _clips(split, False, None, clips):
-        video = OUT / "videos" / run / f"{clip.name}.mp4"
-        if not video.exists():
-            render([clip.name], split=split, run=run)
-        dest = out / "videos" / "full" / f"{clip.name}.mp4"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(video, dest)
+        for tab in tabs or ["truth", "specialist", "foundation", "full"]:
+            video = OUT / "videos" / (run if tab == "full" else tab) / f"{clip.name}.mp4"
+            if not video.exists():
+                render([clip.name], split=split, run=run, tab=tab)
+            dest = out / "videos" / tab / f"{clip.name}.mp4"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(video, dest)
+            typer.echo(f"  {clip.name}: {dest}")
+        sam_score = runs.get(sam_run, {}).get("gs", {}).get("clips", {}).get(clip.name)
         state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"
         ball_path = state_path.with_name(f"{clip.name}_ball.parquet")
         ball = pd.read_parquet(ball_path) if ball_path.exists() else None
@@ -837,11 +879,14 @@ def bundle(clips: list[str], run: str = "main", split: str = "test", out: Path =
                 "full": {
                     "gs_hota": runs[run]["gs"]["clips"].get(clip.name),
                     "baseline": baseline.get("clips", {}).get(clip.name),
-                }
+                },
+                "foundation": {
+                    "gs_hota": sam_score,
+                    "note": "The full system using SAM 3.1's tracks in place of ByteTrack's.",
+                },
             },
             "stats": summarise(pd.read_parquet(state_path), ball, clip.fps),
         }
-        typer.echo(f"  {clip.name}: {dest}")
     (out / "manifest.json").write_text(json.dumps(_no_nan(manifest), indent=1, default=str))
     typer.echo(f"wrote {out / 'manifest.json'}. Next: pitchview viewer --bundle {out}")
 

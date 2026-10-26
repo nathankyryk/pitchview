@@ -15,8 +15,29 @@ import json
 from pathlib import Path
 
 # Every tab the viewer knows, in display order: (title, what it shows). A tab appears once the
-# bundle has its videos. Only "full" is built so far.
+# bundle has its videos; the viewer opens on "full".
 TABS = {
+    "truth": (
+        "Ground truth",
+        (
+            "SoccerNet's labels: every person's box, role, team, jersey number and pitch position. "
+            "Every other tab is scored against these."
+        ),
+    ),
+    "specialist": (
+        "Specialist",
+        (
+            "The fine-tuned RF-DETR detector with ByteTrack: boxes for players, goalkeepers, referees and "
+            "the ball, each with a track id. No teams, numbers or pitch positions yet."
+        ),
+    ),
+    "foundation": (
+        "Foundation",
+        (
+            'SAM 3.1 out of the box, with no training: one text prompt, "person", gives a mask and a track '
+            "for everyone it finds, spectators included. No roles, ball, teams or numbers."
+        ),
+    ),
     "full": (
         "Full system",
         (
@@ -58,7 +79,11 @@ def score_card(manifest: dict, clip: str, tab: str) -> str:
     s = manifest["clips"][clip].get("scores", {}).get(tab)
     if not s:
         return ""
+    if s.get("gs_hota") is None:
+        return ""
     lines = [f"### This clip\n**GS-HOTA {s['gs_hota']:.1f}**"]
+    if s.get("note"):
+        lines.append(s["note"])
     if s.get("baseline") is not None:
         lines.append(f"Official baseline: {s['baseline']:.1f}")
     return "\n\n".join(lines)
@@ -83,6 +108,18 @@ def stats_card(manifest: dict, clip: str) -> str:
     return "\n\n".join(lines)
 
 
+def _tab(gr, bundle: Path, manifest: dict, tab: str, clip: str) -> tuple:
+    title, blurb = TABS[tab]
+    with gr.Tab(title, id=tab):
+        gr.Markdown(blurb)
+        with gr.Row():
+            video = gr.Video(value=video_path(bundle, tab, clip), show_label=False, scale=3)
+            with gr.Column(scale=1):
+                score = gr.Markdown(score_card(manifest, clip, tab))
+                stats = gr.Markdown(stats_card(manifest, clip))
+    return tab, video, score, stats
+
+
 def build(bundle: Path):
     """The Gradio app for a bundle. Call .launch() on the result."""
     import gradio as gr
@@ -96,17 +133,8 @@ def build(bundle: Path):
     with gr.Blocks(title="PitchView") as app:
         gr.Markdown(header(manifest))
         clip = gr.Dropdown(choices=[(clip_label(manifest, c), c) for c in clips], value=first, label="Clip")
-        widgets = []
-        for tab in tabs:
-            title, blurb = TABS[tab]
-            with gr.Tab(title):
-                gr.Markdown(blurb)
-                with gr.Row():
-                    video = gr.Video(value=video_path(bundle, tab, first), show_label=False, scale=3)
-                    with gr.Column(scale=1):
-                        score = gr.Markdown(score_card(manifest, first, tab))
-                        stats = gr.Markdown(stats_card(manifest, first))
-            widgets.append((tab, video, score, stats))
+        with gr.Tabs(selected="full" if "full" in tabs else None):
+            widgets = [_tab(gr, bundle, manifest, tab, first) for tab in tabs]
 
         def show(name: str) -> list:
             out = []
