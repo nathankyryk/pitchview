@@ -489,6 +489,102 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
         typer.echo(f"  {clip.name}: possession {held}, fastest {summary.get('fastest', {}).get('top_speed_kmh')} km/h")
 
 
+def _torch_module(model):
+    """The nn.Module inside a model wrapper (RF-DETR and Ultralytics nest it), for counting parameters."""
+    for candidate in (model, getattr(model, "model", None), getattr(getattr(model, "model", None), "model", None)):
+        if candidate is not None and hasattr(candidate, "parameters") and callable(candidate.parameters):
+            try:
+                next(iter(candidate.parameters()))
+                return candidate
+            except (StopIteration, TypeError):
+                continue
+    return None
+
+
+@app.command()
+def bench(smoke: bool = False, frames: int = 200, warmup: int = 20, clip: str | None = None,
+          detectors: list[str] | None = None, sam: bool = True, save: Path | None = None) -> None:  # fmt: skip
+    """Speed of each model on this machine's GPU: one frame at a time, half precision, after a
+    warm-up, on frames already decoded in memory. --detectors name:resolution (repeatable), e.g.
+    model:1120 (Sunday's RF-DETR, the default) and v2:1280. SAM 3.1 tracks the clip's first --frames frames."""
+    import torch
+    from PIL import Image
+
+    from pitchview.bench import bench_detector, bench_pitch, bench_reader, bench_sam, parameters, size_mb
+    from pitchview.detect import load
+    from pitchview.jersey import JerseyReader
+    from pitchview.pitch import PitchModel
+
+    out = _out(smoke)
+    detectors = detectors or ["model:1120"]
+    cuda = torch.cuda.is_available()
+    target = next(c for c in _clips("test", smoke, None) if clip in (None, c.name))
+    n = min(3 if smoke else frames, len(target.frames))
+    warmup = 1 if smoke else warmup
+    images = [Image.open(f.path).convert("RGB") for f in target.frames[:n]]
+    gt = target.boxes_by_frame()
+    people = [
+        [(b.x, b.y, b.x + b.w, b.y + b.h) for b in gt.get(f.index, []) if b.role in ("player", "goalkeeper")]
+        for f in target.frames[:n]
+    ]
+    report = {"gpu": torch.cuda.get_device_name(0) if cuda else "cpu", "torch": torch.__version__,
+              "clip": target.name, "frames": n, "warmup": warmup, "models": {}}  # fmt: skip
+    rows = report["models"]
+
+    def add(name: str, result: dict, model, weights: Path | None) -> None:
+        module = _torch_module(model)
+        result.update(parameters_m=round(parameters(module) / 1e6, 1) if module is not None else None,
+                      file_mb=size_mb(weights))  # fmt: skip
+        rows[name] = result
+        typer.echo(f"  {name}: {result['fps']:.1f} fps, peak {result['peak_memory_gb'] or 0:.1f} GB")
+
+    for spec in detectors:
+        name, _, res = spec.partition(":")
+        weights = out / _named("detector", name) / "checkpoint_best_total.pth"
+        if not weights.is_file():
+            typer.echo(f"  skip RF-DETR {name}: no {weights}")
+            continue
+        size, resolution = ("nano", 384) if smoke else ("medium", int(res or 1120))
+        model = load(weights, size, resolution)
+        if cuda:
+            model.inference(compile=False, dtype=torch.float16)
+        add(f"RF-DETR {name} ({resolution} px)", bench_detector(model, images, warmup), model, weights)
+        del model
+
+    pitch_weights = out / "pitch_model" / "weights" / "best.pt"
+    pitch_weights = pitch_weights if pitch_weights.is_file() else PITCH_BASE
+    device = None if cuda else "cpu"
+    pitch = PitchModel(pitch_weights, device=device)
+    add("pitch keypoints (YOLOv8x-pose)", bench_pitch(pitch.model, images, warmup, device), pitch.model, pitch_weights)
+    del pitch
+
+    reader = JerseyReader()
+    add("jersey reader (PARSeq)", bench_reader(reader, images, people, warmup), reader.model, None)
+    del reader
+
+    if sam and cuda and SAM_WEIGHTS.is_file():
+        from pitchview.segment import Sam31
+
+        tracker = Sam31(SAM_WEIGHTS)
+        add("SAM 3.1 (video tracking)", bench_sam(tracker, target, n), tracker.predictor.model, SAM_WEIGHTS)
+        del tracker
+    elif sam:
+        typer.echo("  skip SAM 3.1: needs CUDA and its weights")
+
+    path = save or out / "bench.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2))
+    typer.echo(f"\n{report['gpu']}, {n} frames of {target.name}")
+    typer.echo(f"{'model':34s} {'fps':>6s} {'ms':>6s} {'GB':>5s} {'params M':>8s} {'file MB':>7s}")
+    for name, r in rows.items():
+        ms = f"{r['ms_median']:6.1f}" if r["ms_median"] is not None else f"{'-':>6s}"
+        gb = f"{r['peak_memory_gb']:5.1f}" if r["peak_memory_gb"] is not None else f"{'-':>5s}"
+        params = f"{r['parameters_m']:8.1f}" if r["parameters_m"] is not None else f"{'-':>8s}"
+        file_mb = f"{r['file_mb']:7.1f}" if r["file_mb"] is not None else f"{'-':>7s}"
+        typer.echo(f"{name:34s} {r['fps']:6.1f} {ms} {gb} {params} {file_mb}")
+    typer.echo(f"saved {path}")
+
+
 @app.command("eval")
 def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: int | None = None,
              detail: bool = False, save: Path | None = None) -> None:  # fmt: skip

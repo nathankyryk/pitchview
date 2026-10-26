@@ -6,7 +6,7 @@
 #   bash scripts/run_gpu_jobs.sh infer   # unattended: detection, pitch keypoints, jerseys (ByteTrack)
 #   bash scripts/run_gpu_jobs.sh all     # unattended, on the 4090: train, then infer, then the pod stops
 #   bash scripts/run_gpu_jobs.sh sam     # unattended, on a 48 GB+ card: SAM 3.1 masks and tracks
-#   bash scripts/run_gpu_jobs.sh retrain # unattended, ~3 h on a 4090: detector v2, then its detections
+#   bash scripts/run_gpu_jobs.sh retrain # unattended, ~3 h on a 4090: detector v2, its detections, speed table
 #
 # train, infer, sam and all re-launch themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
@@ -169,6 +169,9 @@ retrain_steps() {
     --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
   run "detect: valid x5 ($DETECTOR_NAME)" uv run pitchview detect --split valid --limit 5 --dets "$DETECTOR_NAME" \
     --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
+  # ~10 min: every model one frame at a time on this GPU (the original plan's speed table)
+  run "speed benchmark" uv run pitchview bench --detectors model:1120 --detectors "$DETECTOR_NAME:$DETECTOR_RES" \
+    --save outputs/bench/bench_4090.json
 }
 
 # SAM 3.1 keeps every past frame in GPU memory (~27 MB a frame), so a 750-frame clip needs
