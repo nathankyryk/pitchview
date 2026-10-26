@@ -60,13 +60,40 @@ class JerseyReader:
         return out
 
 
-def vote(reads, min_conf: float = 0.5) -> dict:
+# Number 1 is the goalkeeper's, and GSR leaves goalkeepers unnumbered: not one of GSR's
+# 1,145 train player tracks wears 1. PARSeq, meanwhile, reads stripes and seams as "1",
+# which made "1" over half of all ByteTrack track numbers on test.
+NOT_PLAYER_NUMBERS = frozenset({"1"})
+
+# Tuned with `pitchview jersey-score --grid` on the 5 valid clips (2026-10-26). With "1" excluded,
+# 0.7 gave the most player frames with the right number for both trackers:
+# ByteTrack 53.8% (30.1% with the old 0.5 vote that kept "1"), SAM tracks 52.9% (was 33.3%).
+MIN_CONF = 0.7
+
+
+def vote(reads, min_conf: float = 0.5, min_reads: int = 1, exclude: frozenset = frozenset()) -> dict:
     """reads: (track_key, number or None, confidence). Per track, the number with the largest
-    summed confidence among confident reads; None when the track never had one."""
+    summed confidence among confident reads, if at least `min_reads` of them agree on it;
+    None otherwise. Numbers in `exclude` are ignored."""
     scores: dict = defaultdict(lambda: defaultdict(float))
+    counts: dict = defaultdict(lambda: defaultdict(int))
     keys = []
     for key, number, conf in reads:
         keys.append(key)
-        if number is not None and conf >= min_conf:
+        if number is not None and number not in exclude and conf >= min_conf:
             scores[key][number] += conf
-    return {key: (max(scores[key], key=scores[key].get) if scores[key] else None) for key in dict.fromkeys(keys)}
+            counts[key][number] += 1
+    out = {}
+    for key in dict.fromkeys(keys):
+        ok = {number: s for number, s in scores[key].items() if counts[key][number] >= min_reads}
+        out[key] = max(ok, key=ok.get) if ok else None
+    return out
+
+
+def load_reads(path) -> list[tuple[int, str | None, float]]:
+    """The raw reads `pitchview jerseys` saves, as vote() input."""
+    import pandas as pd
+
+    d = pd.read_parquet(path)
+    numbers = d["number"].astype(object).where(d["number"].notna(), None)  # parquet brings None back as NaN
+    return list(zip(d["track_id"].astype(int), numbers, d["conf"].astype(float)))

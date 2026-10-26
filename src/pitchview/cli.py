@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 import typer
 
 from pitchview.gsr import DEFAULT_ROOT, list_clips
+from pitchview.jersey import MIN_CONF
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
 OUT = Path(os.environ.get("PITCHVIEW_OUT", "outputs"))  # the pod's check stage writes to outputs/check
@@ -239,32 +240,80 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
 
 @app.command()
 def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack", dets: str = "model",
-            stride: int = 10, limit: int | None = None) -> None:  # fmt: skip
-    """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s)."""
+            stride: int = 10, limit: int | None = None, min_conf: float = MIN_CONF, allow_one: bool = False) -> None:  # fmt: skip
+    """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s), then vote per track.
+
+    Every raw read is saved (jersey_reads_*). A clip whose reads are saved is only re-voted, in
+    seconds, so vote settings can change without reading again (tune them with jersey-score)."""
     from PIL import Image
 
-    from pitchview.jersey import JerseyReader, shirt_region, vote
+    from pitchview.jersey import NOT_PLAYER_NUMBERS, JerseyReader, load_reads, shirt_region, vote
 
     out = _out(smoke)
     if smoke:
         stride = 2  # only 10 frames, and tracks are not confirmed on frame 1
-    reader = JerseyReader()
+    exclude = frozenset() if allow_one else NOT_PLAYER_NUMBERS
+    reader = None
     for clip in _clips(split, smoke, limit):
         path = out / f"jerseys_{tracker}_{dets}" / split / f"{clip.name}.json"
-        if not _todo(path, clip.name):
-            continue
-        tracks = _tracks(out, split, clip, tracker, dets)
-        frames = {f.index: f for f in clip.frames}
-        reads = []
-        for frame, rows in tracks[(tracks["frame"] - 1) % stride == 0].groupby("frame"):
-            image = Image.open(frames[int(frame)].path)
-            crops = [image.crop(shirt_region(b)) for b in rows[["x1", "y1", "x2", "y2"]].itertuples(index=False)]
-            for tid, (number, conf) in zip(rows["track_id"], reader.read(crops)):
-                reads.append((int(tid), number, conf))
-        numbers = vote(reads)
+        reads_path = out / f"jersey_reads_{tracker}_{dets}" / split / f"{clip.name}.parquet"
+        if reads_path.exists():
+            reads = load_reads(reads_path)
+        else:
+            reader = reader or JerseyReader()
+            tracks = _tracks(out, split, clip, tracker, dets)
+            frames = {f.index: f for f in clip.frames}
+            raw = []
+            for frame, rows in tracks[(tracks["frame"] - 1) % stride == 0].groupby("frame"):
+                image = Image.open(frames[int(frame)].path)
+                crops = [image.crop(shirt_region(b)) for b in rows[["x1", "y1", "x2", "y2"]].itertuples(index=False)]
+                for tid, (number, conf) in zip(rows["track_id"], reader.read(crops)):
+                    raw.append((int(tid), int(frame), number, conf))
+            reads_path.parent.mkdir(parents=True, exist_ok=True)
+            table = pd.DataFrame(raw, columns=["track_id", "frame", "number", "conf"])
+            table.astype({"track_id": "int64", "frame": "int64", "conf": "float64"}).to_parquet(reads_path)
+            reads = [(tid, number, conf) for tid, _, number, conf in raw]
+        numbers = vote(reads, min_conf=min_conf, exclude=exclude)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({str(k): v for k, v in numbers.items()}))
         typer.echo(f"  {clip.name}: {sum(v is not None for v in numbers.values())}/{len(numbers)} tracks read")
+
+
+@app.command("jersey-score")
+def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
+                 min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, grid: bool = False) -> None:  # fmt: skip
+    """Score per-track jersey numbers against ground truth, re-voting from the saved raw reads.
+    --grid tries a range of vote settings. Tune on valid, then report the chosen one on test."""
+    from pitchview.evaluate import jersey_summary, jersey_truth
+    from pitchview.jersey import NOT_PLAYER_NUMBERS, load_reads, vote
+
+    clips = []
+    for clip in _clips(split, False, limit):
+        reads_path = OUT / f"jersey_reads_{tracker}_{dets}" / split / f"{clip.name}.parquet"
+        if reads_path.exists():
+            clips.append((load_reads(reads_path), jersey_truth(_tracks(OUT, split, clip, tracker, dets), clip)))
+    if not clips:
+        raise typer.Exit("no saved reads: run `pitchview jerseys` first")
+
+    def score(conf: float, reads_needed: int, one: bool) -> dict:
+        predicted, truth, frames = [], [], []
+        for reads, t in clips:
+            numbers = vote(reads, conf, reads_needed, frozenset() if one else NOT_PLAYER_NUMBERS)
+            predicted += [numbers.get(int(k)) for k in t["track_id"]]
+            truth += list(t["gt_jersey"])
+            frames += list(t["frames"])
+        return jersey_summary(predicted, truth, frames)
+
+    settings = (
+        [(c, r, o) for o in (True, False) for r in (1, 2, 3, 5) for c in (0.3, 0.5, 0.7, 0.8, 0.9)]
+        if grid
+        else [(min_conf, min_reads, allow_one)]
+    )
+    typer.echo(f"{split} / {tracker}: {len(clips)} clips, {sum(len(t) for _, t in clips)} player tracks")
+    typer.echo(f"{'min_conf':>8} {'min_reads':>9} {'allow 1':>7} {'agree':>6} {'read':>5} {'precision':>9} {'accuracy':>8}")
+    for c, r, o in settings:
+        s = score(c, r, o)
+        typer.echo(f"{c:8.1f} {r:9d} {o!s:>7} {s['agree']:6.1%} {s['read']:5.0%} {s['precision']:9.1%} {s['accuracy']:8.1%}")
 
 
 @app.command()

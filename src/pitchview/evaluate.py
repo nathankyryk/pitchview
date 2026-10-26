@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from pitchview.gsr import Clip
 
@@ -56,6 +57,69 @@ def write_predictions(trackers_root: Path, split: str, tracker: str, clip_name: 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"predictions": predictions}))
     return path
+
+
+def jersey_truth(tracks: pd.DataFrame, clip: Clip, min_iou: float = 0.5) -> pd.DataFrame:
+    """The true number behind each predicted track that follows a player, for scoring jersey reads.
+
+    Per frame, predicted and true boxes are matched one-to-one (IoU >= min_iou), and a track
+    follows the person it matched most often. One row per such track: track_id, gt_jersey
+    (None when the number is never visible) and frames (how often it matched that player).
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    from pitchview.segment import box_iou
+
+    by_frame = clip.boxes_by_frame()
+    people: dict = {}
+    hits = []
+    for frame, rows in tracks.groupby("frame"):
+        gt = [b for b in by_frame.get(int(frame), []) if b.role != "ball" and b.track_id is not None]
+        if not gt:
+            continue
+        iou = box_iou(
+            rows[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float),
+            np.array([[b.x, b.y, b.x + b.w, b.y + b.h] for b in gt]),
+        )
+        for i, j in zip(*linear_sum_assignment(-iou)):
+            if iou[i, j] >= min_iou:
+                hits.append((int(rows["track_id"].iloc[i]), gt[j].track_id))
+                people[gt[j].track_id] = gt[j]
+    if not hits:
+        return pd.DataFrame({"track_id": [], "gt_jersey": [], "frames": []})
+    counts = pd.DataFrame(hits, columns=["track_id", "gt_track"]).value_counts().rename("frames").reset_index()
+    best = counts.sort_values("frames", ascending=False, kind="stable").drop_duplicates("track_id")
+    best = best[[people[t].role == "player" for t in best["gt_track"]]]
+    return pd.DataFrame(
+        {
+            "track_id": best["track_id"].to_numpy(),
+            "gt_jersey": pd.Series([people[t].jersey for t in best["gt_track"]], dtype=object),  # keep None
+            "frames": best["frames"].to_numpy(),
+        }
+    )
+
+
+def jersey_summary(predicted: list, truth: list, frames) -> dict[str, float]:
+    """Scores for per-track numbers (None = no number) against the truth.
+
+    agree:     share of player frames whose number is exactly right, "no number" included.
+               This is what GS-HOTA rewards: a wrong number and a missing one both break the match.
+    read:      share of tracks given a number.
+    precision: share of those numbers that are right.
+    accuracy:  share of numbered players read right (the zero-shot PARSeq baseline was 40%).
+    """
+    frames = np.asarray(frames, dtype=float)
+    predicted = [None if pd.isna(p) else p for p in predicted]  # pandas may hand back NaN for None
+    truth = [None if pd.isna(t) else t for t in truth]
+    right = np.array([p == t for p, t in zip(predicted, truth)], dtype=bool)
+    read = np.array([p is not None for p in predicted], dtype=bool)
+    numbered = np.array([t is not None for t in truth], dtype=bool)
+    return {
+        "agree": float(frames[right].sum() / max(frames.sum(), 1)),
+        "read": float(read.mean()) if len(read) else 0.0,
+        "precision": float((right & read).sum() / max(read.sum(), 1)),
+        "accuracy": float((right & numbered).sum() / max(numbered.sum(), 1)),
+    }
 
 
 def gs_hota(
