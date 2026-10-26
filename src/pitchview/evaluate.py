@@ -149,6 +149,36 @@ def jersey_truth(tracks: pd.DataFrame, clip: Clip, min_iou: float = 0.5) -> pd.D
     )
 
 
+def position_errors(state: pd.DataFrame, clip: Clip, min_iou: float = 0.5) -> pd.DataFrame:
+    """Pitch-position error in metres of each game-state row that matches a true person.
+
+    Per frame, predicted and true boxes (people with a pitch position) are matched one-to-one
+    (IoU >= min_iou); rows without a position (no pitch mapping that frame) still count as matched,
+    so coverage shows how often a position exists. Columns: frame, role (the true one), error_m (NaN
+    when the prediction has no position).
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    from pitchview.segment import box_iou
+
+    by_frame = clip.boxes_by_frame()
+    rows_out = []
+    for frame, rows in state.groupby("frame"):
+        gt = [b for b in by_frame.get(int(frame), []) if b.role != "ball" and b.pitch_x is not None]
+        if not gt:
+            continue
+        iou = box_iou(
+            rows[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float),
+            np.array([[b.x, b.y, b.x + b.w, b.y + b.h] for b in gt]),
+        )
+        xy = rows[["x_m", "y_m"]].to_numpy(dtype=float)
+        for i, j in zip(*linear_sum_assignment(-iou)):
+            if iou[i, j] >= min_iou:
+                error = float(np.hypot(xy[i, 0] - gt[j].pitch_x, xy[i, 1] - gt[j].pitch_y))
+                rows_out.append((int(frame), gt[j].role, error))
+    return pd.DataFrame(rows_out, columns=["frame", "role", "error_m"])
+
+
 def jersey_summary(predicted: list, truth: list, frames) -> dict[str, float]:
     """Scores for per-track numbers (None = no number) against the truth.
 

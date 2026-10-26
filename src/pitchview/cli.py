@@ -743,6 +743,46 @@ def games(names: list[str], split: str = "test", save: Path | None = None) -> No
         typer.echo(f"saved {save}")
 
 
+@app.command("position-error")
+def position_error(names: list[str], split: str = "test", save: Path | None = None) -> None:
+    """Pitch-position error in metres per run, on game-state rows matched to a true person (box IoU
+    >= 0.5). GS-HOTA accepts anything within ~5 m, so this shows what the mask foot point and the
+    calibration buy below that. "positioned" = matched rows that have a position at all."""
+    from pitchview.evaluate import position_errors
+
+    clips = [c for c in _clips(split, False) if any((OUT / "gamestate" / n / split / f"{c.name}.parquet").exists()
+                                                      for n in names)]  # fmt: skip
+    game = {c.name: str(c.labels["info"].get("game_id", "?")) for c in clips}
+    games_ = sorted(set(game.values()), key=lambda g: (not g.isdigit(), int(g) if g.isdigit() else 0))
+    typer.echo(f"{'run':22s} {'matched':>8s} {'positioned':>10s} {'median':>7s} {'mean':>6s} {'p90':>6s} "
+               f"{'<1 m':>6s} {'<2 m':>6s} " + " ".join(f"{'game ' + g:>8s}" for g in games_))  # fmt: skip
+    report = {}
+    for name in names:
+        parts = []
+        for clip in clips:
+            path = OUT / "gamestate" / name / split / f"{clip.name}.parquet"
+            if path.exists():
+                parts.append(position_errors(pd.read_parquet(path), clip).assign(game=game[clip.name]))
+        if not parts:
+            typer.echo(f"{name:22s} no game state")
+            continue
+        e = pd.concat(parts)
+        err = e["error_m"].dropna()
+        by_game = {g: float(e.loc[e["game"] == g, "error_m"].median()) for g in games_}
+        r = report[name] = {
+            "clips": len(parts), "matched": len(e), "positioned": len(err) / len(e),
+            "median_m": float(err.median()), "mean_m": float(err.mean()), "p90_m": float(err.quantile(0.9)),
+            "within_1m": float((err < 1).mean()), "within_2m": float((err < 2).mean()), "median_m_by_game": by_game,
+        }  # fmt: skip
+        typer.echo(f"{name:22s} {r['matched']:8,d} {r['positioned']:10.1%} {r['median_m']:7.2f} {r['mean_m']:6.2f} "
+                   f"{r['p90_m']:6.2f} {r['within_1m']:6.1%} {r['within_2m']:6.1%} "
+                   + " ".join(f"{by_game[g]:8.2f}" for g in games_))  # fmt: skip
+    if save:
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_text(json.dumps({"split": split, "runs": report}, indent=1))
+        typer.echo(f"saved {save}")
+
+
 # README labels for the runs in the results table, in table order.
 RUN_LABELS = {
     "baseline": "Official baseline (sn-gamestate: PRTReID + StrongSORT), rescored",
@@ -761,13 +801,14 @@ RUN_LABELS = {
 
 
 @app.command()
-def table(results: list[Path]) -> None:
-    """Markdown results table from `eval --detail --save` JSON files (later files win on repeats)."""
+def table(results: list[Path], everything: bool = typer.Option(False, "--all", help="also runs without a label")) -> None:
+    """Markdown results table from `eval --detail --save` JSON files (later files win on repeats).
+    Only the runs named in RUN_LABELS, in that order, unless --all."""
     runs: dict = {}
     for path in results:
         data = json.loads(path.read_text())
         runs.update(data["runs"])
-    order = [r for r in RUN_LABELS if r in runs] + [r for r in runs if r not in RUN_LABELS]
+    order = [r for r in RUN_LABELS if r in runs] + ([r for r in runs if r not in RUN_LABELS] if everything else [])
     typer.echo("| Run | GS-HOTA | DetA | AssA | GS-HOTA, jerseys not checked | Tracking HOTA | IDF1 | ID switches |")
     typer.echo("|---|---|---|---|---|---|---|---|")
     for name in order:

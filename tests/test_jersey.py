@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from pitchview.evaluate import jersey_summary, jersey_truth
+from pitchview.evaluate import jersey_summary, jersey_truth, position_errors
 from pitchview.gsr import Box
 from pitchview.jersey import NOT_PLAYER_NUMBERS, load_reads, parse_number, shirt_crop, shirt_region, vote
 
@@ -90,6 +90,29 @@ def test_jersey_truth_follows_the_most_matched_player():
     tracks = tracks.assign(y1=0.0, x2=tracks["x1"] + 10, y2=20.0)
     truth = jersey_truth(tracks, clip).set_index("track_id")
     assert truth.to_dict("index") == {7: {"gt_jersey": "10", "frames": 2}, 8: {"gt_jersey": None, "frames": 2}}
+
+
+def test_position_errors_measure_matched_people_in_metres():
+    gt = [
+        Box(1, 1, 1, "player", "left", "10", 0, 0, 10, 20, 3.0, 4.0),
+        Box(1, 2, 1, "player", "left", "7", 100, 0, 10, 20, -5.0, 0.0),
+        Box(1, 3, 4, "ball", None, None, 200, 0, 5, 5, 1.0, 1.0),  # the ball is not a person: never matched
+        Box(2, 1, 1, "player", "left", "10", 0, 0, 10, 20, 3.0, 4.0),
+    ]
+    state = pd.DataFrame(
+        [  # frame, x1, x_m, y_m
+            (1, 0, 0.0, 0.0),  # player 1, 5 m off
+            (1, 100, -5.0, 1.0),  # player 2, 1 m off
+            (1, 200, 1.0, 1.0),  # on the ball
+            (2, 0, float("nan"), float("nan")),  # player 1, no pitch mapping this frame
+            (2, 400, 3.0, 4.0),  # nobody there
+        ],
+        columns=["frame", "x1", "x_m", "y_m"],
+    )
+    state = state.assign(y1=0.0, x2=state["x1"] + 10, y2=20.0)
+    errors = position_errors(state, _FakeClip(gt))
+    assert errors["error_m"].iloc[:2].tolist() == [5.0, 1.0]
+    assert len(errors) == 3 and np.isnan(errors["error_m"].iloc[2])
 
 
 def test_jersey_summary_counts_no_number_as_right_when_none_is_visible():
