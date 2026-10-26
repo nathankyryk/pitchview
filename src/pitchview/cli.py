@@ -240,7 +240,8 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
 
 @app.command()
 def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack", dets: str = "model",
-            stride: int = 10, limit: int | None = None, min_conf: float = MIN_CONF, allow_one: bool = False) -> None:  # fmt: skip
+            stride: int = 10, limit: int | None = None, min_conf: float = MIN_CONF, allow_one: bool = False,
+            merge_partial: bool = True) -> None:  # fmt: skip
     """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s), then vote per track.
 
     Every raw read is saved (jersey_reads_*). A clip whose reads are saved is only re-voted, in
@@ -273,7 +274,7 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
             table = pd.DataFrame(raw, columns=["track_id", "frame", "number", "conf"])
             table.astype({"track_id": "int64", "frame": "int64", "conf": "float64"}).to_parquet(reads_path)
             reads = [(tid, number, conf) for tid, _, number, conf in raw]
-        numbers = vote(reads, min_conf=min_conf, exclude=exclude)
+        numbers = vote(reads, min_conf=min_conf, exclude=exclude, merge_partial=merge_partial)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({str(k): v for k, v in numbers.items()}))
         typer.echo(f"  {clip.name}: {sum(v is not None for v in numbers.values())}/{len(numbers)} tracks read")
@@ -348,7 +349,8 @@ def detector_score(split: str = "test", dets: str = "model", limit: int | None =
 
 @app.command("jersey-score")
 def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
-                 min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, grid: bool = False) -> None:  # fmt: skip
+                 min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, merge_partial: bool = True,
+                 grid: bool = False) -> None:  # fmt: skip
     """Score per-track jersey numbers against ground truth, re-voting from the saved raw reads.
     --grid tries a range of vote settings. Tune on valid, then report the chosen one on test."""
     from pitchview.evaluate import jersey_summary, jersey_truth
@@ -362,39 +364,40 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
     if not clips:
         raise typer.Exit("no saved reads: run `pitchview jerseys` first")
 
-    def score(conf: float, reads_needed: int, one: bool) -> dict:
+    def score(conf: float, reads_needed: int, one: bool, merge: bool) -> dict:
         predicted, truth, frames = [], [], []
         for reads, t in clips:
-            numbers = vote(reads, conf, reads_needed, frozenset() if one else NOT_PLAYER_NUMBERS)
+            numbers = vote(reads, conf, reads_needed, frozenset() if one else NOT_PLAYER_NUMBERS, merge)
             predicted += [numbers.get(int(k)) for k in t["track_id"]]
             truth += list(t["gt_jersey"])
             frames += list(t["frames"])
         return jersey_summary(predicted, truth, frames)
 
     settings = (
-        [(c, r, o) for o in (True, False) for r in (1, 2, 3, 5) for c in (0.3, 0.5, 0.7, 0.8, 0.9)]
+        [(c, r, o, m) for m in (False, True) for o in (True, False) for r in (1, 2, 3) for c in (0.5, 0.6, 0.7, 0.8)]
         if grid
-        else [(min_conf, min_reads, allow_one)]
+        else [(min_conf, min_reads, allow_one, merge_partial)]
     )
     typer.echo(f"{split} / {tracker}: {len(clips)} clips, {sum(len(t) for _, t in clips)} player tracks")
-    typer.echo(f"{'min_conf':>8} {'min_reads':>9} {'allow 1':>7} {'agree':>6} {'read':>5} {'precision':>9} {'accuracy':>8}")
-    for c, r, o in settings:
-        s = score(c, r, o)
-        typer.echo(f"{c:8.1f} {r:9d} {o!s:>7} {s['agree']:6.1%} {s['read']:5.0%} {s['precision']:9.1%} {s['accuracy']:8.1%}")
+    typer.echo(f"{'min_conf':>8} {'min_reads':>9} {'allow 1':>7} {'merge':>5} {'agree':>6} {'read':>5} {'precision':>9} {'accuracy':>8}")
+    for c, r, o, m in settings:
+        s = score(c, r, o, m)
+        typer.echo(f"{c:8.1f} {r:9d} {o!s:>7} {m!s:>5} {s['agree']:6.1%} {s['read']:5.0%} {s['precision']:9.1%} {s['accuracy']:8.1%}")
 
 
 @app.command()
 def assemble(
     split: str = "test", smoke: bool = False, name: str = "main", tracker: str = "bytetrack", foot: str = "mask",
     team_crops: str = "mask", jersey: bool = True, smooth: int = 5, pitch: str = "finetuned", dets: str = "model",
-    limit: int | None = None,
+    limit: int | None = None, pitch_check: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
-    --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors."""
+    --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
+    --no-pitch-check keeps every fitted pitch mapping, even implausible or jumpy ones (pitch.checked_homographies)."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
-    from pitchview.pitch import frame_homographies, oracle_homography
+    from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth)
@@ -409,6 +412,8 @@ def assemble(
         else:
             kp = pq.read_table(out / f"keypoints_{pitch}" / split / f"{clip.name}.parquet").to_pandas()
             Hs = frame_homographies(kp)
+            if pitch_check:
+                Hs = checked_homographies(Hs, width=clip.frames[0].width, height=clip.frames[0].height)
         jersey_path = out / f"jerseys_{tracker}_{dets}" / split / f"{clip.name}.json"
         numbers = {int(k): v for k, v in json.loads(jersey_path.read_text()).items()} if jersey_path.exists() else None
         state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v)

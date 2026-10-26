@@ -68,24 +68,40 @@ NOT_PLAYER_NUMBERS = frozenset({"1"})
 # Tuned with `pitchview jersey-score --grid` on the 5 valid clips (2026-10-26). With "1" excluded,
 # 0.7 gave the most player frames with the right number for both trackers:
 # ByteTrack 53.8% (30.1% with the old 0.5 vote that kept "1"), SAM tracks 52.9% (was 33.3%).
+# The CLI also merges one-digit reads into two-digit ones (merge_partial): ByteTrack 55.1%, SAM unchanged.
+# One rule for both trackers: ByteTrack alone did best at 0.6 with 2 agreeing reads (57.0%), but 5 clips
+# are too few to tune each tracker separately.
 MIN_CONF = 0.7
 
 
-def vote(reads, min_conf: float = 0.5, min_reads: int = 1, exclude: frozenset = frozenset()) -> dict:
+def vote(reads, min_conf: float = 0.5, min_reads: int = 1, exclude: frozenset = frozenset(),
+         merge_partial: bool = False) -> dict:  # fmt: skip
     """reads: (track_key, number or None, confidence). Per track, the number with the largest
     summed confidence among confident reads, if at least `min_reads` of them agree on it;
-    None otherwise. Numbers in `exclude` are ignored."""
+    None otherwise. Numbers in `exclude` never win.
+
+    merge_partial: a one-digit read that is part of a two-digit read on the same track ("4" and
+    "14") counts toward the two-digit number, since the reader often catches only one digit.
+    """
     scores: dict = defaultdict(lambda: defaultdict(float))
     counts: dict = defaultdict(lambda: defaultdict(int))
     keys = []
     for key, number, conf in reads:
         keys.append(key)
-        if number is not None and number not in exclude and conf >= min_conf:
+        if number is not None and conf >= min_conf:
             scores[key][number] += conf
             counts[key][number] += 1
     out = {}
     for key in dict.fromkeys(keys):
-        ok = {number: s for number, s in scores[key].items() if counts[key][number] >= min_reads}
+        s, c = scores[key], counts[key]
+        if merge_partial:
+            for digit in [n for n in s if len(n) == 1]:
+                longer = [n for n in s if len(n) == 2 and digit in n]
+                if longer:
+                    best = max(longer, key=s.get)
+                    s[best] += s.pop(digit)
+                    c[best] += c.pop(digit)
+        ok = {number: v for number, v in s.items() if c[number] >= min_reads and number not in exclude}
         out[key] = max(ok, key=ok.get) if ok else None
     return out
 

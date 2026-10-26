@@ -83,3 +83,10 @@ def test_jersey_summary_counts_no_number_as_right_when_none_is_visible():
     assert s["agree"] == 0.4  # 10 + 30 of 100 frames
     assert s["read"] == 0.5 and s["precision"] == 0.5
     assert s["accuracy"] == 1 / 3  # of the three numbered players, only "10" was read
+
+
+def test_vote_merges_a_lone_digit_into_the_two_digit_number_it_is_part_of():
+    reads = [("a", "4", 0.9), ("a", "4", 0.8), ("a", "14", 0.75), ("b", "4", 0.9), ("c", "1", 0.9), ("c", "17", 0.6)]
+    assert vote(reads) == {"a": "4", "b": "4", "c": "1"}
+    merged = vote(reads, merge_partial=True, exclude=NOT_PLAYER_NUMBERS)
+    assert merged == {"a": "14", "b": "4", "c": "17"}  # a stray "1" now supports 17 instead of being lost

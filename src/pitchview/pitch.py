@@ -117,6 +117,48 @@ def frame_homographies(keypoints, min_conf: float = 0.5) -> dict[int, np.ndarray
     return out
 
 
+def plausible(H: np.ndarray, width: int = 1920, height: int = 1080) -> bool:
+    """Whether a mapping could come from a broadcast camera, which films from the near touchline.
+
+    So the bottom of the image is nearer that touchline (larger y) than the middle, and lands on or
+    near the pitch. On GSR's labels for 1,645 train and valid frames this held every time, with the
+    bottom-centre at |x| <= 38 m and 8 <= y <= 54 m; the bounds below leave a margin. A wrong fit
+    (e.g. keypoints matched to the far side of the pitch) can put players 30 m off: SNGS-191.
+    """
+    bottom, middle = to_pitch(H, np.array([[width / 2, height - 1], [width / 2, height / 2]]))
+    if not np.all(np.isfinite([bottom, middle])):
+        return False
+    return bool(bottom[1] > middle[1] and abs(bottom[0]) <= 55 and 0 <= bottom[1] <= 65)
+
+
+def steady(Hs: dict[int, np.ndarray], width: int = 1920, height: int = 1080, window: int = 12,
+           max_jump_m: float = 10.0) -> dict[int, np.ndarray]:  # fmt: skip
+    """Drop frames whose mapping jumps away from its neighbours': the camera moves smoothly, so
+    the image's bottom-centre should land within max_jump_m of where it lands in the median
+    neighbouring frame (within `window` frames either side)."""
+    frames = sorted(Hs)
+    spots = np.array([to_pitch(Hs[f], np.array([[width / 2, height - 1]]))[0] for f in frames])
+    kept = {}
+    for i, f in enumerate(frames):
+        lo, hi = np.searchsorted(frames, f - window), np.searchsorted(frames, f + window, side="right")
+        if np.linalg.norm(spots[i] - np.median(spots[lo:hi], axis=0)) <= max_jump_m:
+            kept[f] = Hs[f]
+    return kept
+
+
+def checked_homographies(primary: dict[int, np.ndarray], fallback: dict[int, np.ndarray] | None = None,
+                         width: int = 1920, height: int = 1080) -> dict[int, np.ndarray]:  # fmt: skip
+    """Per-frame mappings that pass plausible() and steady(): the primary model's where it passes,
+    else the fallback model's. Frames left without one borrow a neighbour's (nearest_homography)."""
+
+    def clean(Hs: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
+        return steady({f: H for f, H in Hs.items() if plausible(H, width, height)}, width, height)
+
+    out = clean(fallback) if fallback else {}
+    out.update(clean(primary))
+    return out
+
+
 def nearest_homography(Hs: dict[int, np.ndarray], frame: int, max_gap: int = 12) -> np.ndarray | None:
     """The homography of `frame`, or of the closest frame within max_gap (camera moves slowly)."""
     if frame in Hs:

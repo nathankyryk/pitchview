@@ -2,7 +2,17 @@ import cv2
 import numpy as np
 
 from pitchview.gsr import Box
-from pitchview.pitch import PITCH_KEYPOINTS, fit_homography, keypoint_labels, oracle_homography, to_image, to_pitch
+from pitchview.pitch import (
+    PITCH_KEYPOINTS,
+    checked_homographies,
+    fit_homography,
+    keypoint_labels,
+    oracle_homography,
+    plausible,
+    steady,
+    to_image,
+    to_pitch,
+)
 
 # A plausible broadcast camera: pitch metres -> 1920x1080 image pixels.
 PITCH_CORNERS = np.array([[-52.5, -34], [52.5, -34], [52.5, 34], [-52.5, 34]], dtype=np.float64)
@@ -43,6 +53,32 @@ def test_keypoint_labels_round_trip_and_fit():
     H = fit_homography(xy, conf)
     np.testing.assert_allclose(to_pitch(H, xy[visible]), PITCH_KEYPOINTS[visible], atol=1e-3)
     np.testing.assert_allclose(to_image(H, PITCH_KEYPOINTS[:1]), xy[:1], atol=1e-2)
+
+
+MIRROR_Y = np.diag([1.0, -1.0, 1.0])  # the far touchline becomes the near one
+SHIFT_20M = np.array([[1.0, 0, 20], [0, 1, 0], [0, 0, 1]])
+
+
+def test_plausible_wants_the_camera_on_the_near_side():
+    assert plausible(H_IMAGE_TO_PITCH)
+    assert not plausible(MIRROR_Y @ H_IMAGE_TO_PITCH)  # camera on the far side
+    assert not plausible(np.diag([-1.0, -1.0, 1.0]) @ H_IMAGE_TO_PITCH)  # pitch rotated end to end
+    assert not plausible(np.array([[1.0, 0, 200], [0, 1, 0], [0, 0, 1]]) @ H_IMAGE_TO_PITCH)  # 200 m off the pitch
+
+
+def test_steady_drops_a_frame_that_jumps():
+    Hs = {f: H_IMAGE_TO_PITCH for f in range(1, 31)}
+    Hs[15] = SHIFT_20M @ H_IMAGE_TO_PITCH
+    assert sorted(steady(Hs)) == [f for f in range(1, 31) if f != 15]
+
+
+def test_checked_homographies_prefer_the_primary_and_fill_from_the_fallback():
+    primary = {1: MIRROR_Y @ H_IMAGE_TO_PITCH, 2: H_IMAGE_TO_PITCH}
+    fallback = {1: H_IMAGE_TO_PITCH.copy(), 3: H_IMAGE_TO_PITCH.copy()}
+    out = checked_homographies(primary, fallback)
+    assert sorted(out) == [1, 2, 3]
+    assert out[2] is primary[2] and out[1] is fallback[1]
+    assert sorted(checked_homographies(primary)) == [2]
 
 
 def test_fit_homography_needs_four_points():
