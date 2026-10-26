@@ -33,6 +33,7 @@ dependencies = [
     "sn-trackeval",
     # Demo app
     "gradio",
+    "av>=14",  # writes the rendered clips as H.264 MP4 (plays in browsers)
     # SAM 3.1 runs only on the Linux GPU pod. einops and scikit-image are
     # imported by its video code but missing from its own dependency list.
     "sam3 ; sys_platform == 'linux'",

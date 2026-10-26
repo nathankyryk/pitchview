@@ -20,6 +20,7 @@ from pitchview.teams import cluster_teams, name_sides
 from pitchview.track import bytetrack
 
 BOX = ["x1", "y1", "x2", "y2"]
+STATE_COLUMNS = ["frame", "track_id", "role", "team", "jersey", "x_m", "y_m", "score", *BOX, "sam_obj_id"]
 
 
 @dataclass(frozen=True)
@@ -110,10 +111,11 @@ def assemble(
     fps: float = 25.0,
     v: Variant = Variant(),  # noqa: B008  (frozen dataclass, safe as a default)
 ) -> pd.DataFrame:
-    """One row per person per frame: track_id, role, team, jersey, x_m, y_m, score."""
+    """One row per person per frame: track_id, role, team, jersey, x_m, y_m, score, and for the
+    video renderer the image box (x1, y1, x2, y2) and SAM's mask id (sam_obj_id, -1 if none)."""
     people = _to_metres(_people(dets, sam, n_frames, fps, v), homographies)
     if people.empty:
-        return pd.DataFrame(columns=["frame", "track_id", "role", "team", "jersey", "x_m", "y_m", "score"])
+        return pd.DataFrame(columns=STATE_COLUMNS)
     if v.smooth > 1:
         people = people.sort_values(["track_id", "frame"])
         for col in ("x_m", "y_m"):
@@ -129,8 +131,8 @@ def assemble(
     out["jersey"] = out["track_id"].map(jerseys or {}) if v.jersey else None
     out.loc[out["role"] != "player", "jersey"] = None
     score = out["score"] if "score" in out else out.get("prob", 1.0)
-    out = out.assign(score=score)
-    return out[["frame", "track_id", "role", "team", "jersey", "x_m", "y_m", "score"]].reset_index(drop=True)
+    out = out.assign(score=score, sam_obj_id=out["sam_obj_id"].fillna(-1).astype(int))
+    return out[STATE_COLUMNS].reset_index(drop=True)
 
 
 def ball_positions(dets: pd.DataFrame, homographies: dict[int, np.ndarray], min_score: float = 0.3,

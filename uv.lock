@@ -1183,6 +1183,7 @@ name = "pitchview"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "av" },
     { name = "duckdb" },
     { name = "einops", marker = "sys_platform != 'win32'" },
     { name = "gradio" },
@@ -1222,6 +1223,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "av", specifier = ">=14" },
     { name = "duckdb" },
     { name = "einops", marker = "sys_platform == 'linux'" },
     { name = "gradio" },

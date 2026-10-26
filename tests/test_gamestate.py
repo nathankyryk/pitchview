@@ -40,6 +40,7 @@ def test_assemble_maps_people_to_metres_with_roles():
     referee = state[state["role"] == "referee"]
     assert np.allclose(referee[["x_m", "y_m"]].to_numpy(), [12.0, 10.0])  # (620, 400) px, box bottom-centre
     assert referee["team"].isna().all() and referee["jersey"].isna().all()
+    assert (state["sam_obj_id"] == -1).all()  # no masks in this test
     player = state[state["role"] == "player"].sort_values("frame")
     assert np.allclose(np.diff(player["x_m"]), 0.5)  # 5 px per frame -> 0.5 m per frame
 
@@ -56,6 +57,8 @@ def test_mask_foot_point_used_when_a_mask_matches():
     with_box = assemble(dets, sam, _all_frames(), None, None, FRAMES, v=Variant(foot="box", smooth=1))
     assert np.allclose(with_mask["x_m"], 230 / 10 - 50)
     assert np.allclose(with_box["x_m"], 220 / 10 - 50)
+    # the renderer's link back to the image: the tracked box and the mask that matched it
+    assert (with_mask["sam_obj_id"] == 7).all() and (with_mask["x1"] == 200).all()
 
 
 def test_sam_tracker_takes_ids_from_sam_and_roles_from_detections():
@@ -68,6 +71,7 @@ def test_sam_tracker_takes_ids_from_sam_and_roles_from_detections():
     state = assemble(dets, sam, _all_frames(), None, None, FRAMES, v=Variant(tracker="sam", smooth=1))
     assert state.groupby("track_id")["role"].first().to_dict() == {3: "player", 8: "referee"}
     assert len(state) == 2 * FRAMES  # every frame, no ByteTrack warm-up
+    assert (state["sam_obj_id"] == state["track_id"]).all()
 
 
 def test_teams_from_jersey_embeddings_and_goalkeeper_half():

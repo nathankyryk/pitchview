@@ -32,8 +32,13 @@ def _out(smoke: bool) -> Path:
     return OUT / "smoke" if smoke else OUT
 
 
-def _clips(split: str, smoke: bool, limit: int | None = None):
+def _clips(split: str, smoke: bool, limit: int | None = None, names: list[str] | None = None):
     clips = list_clips(split, DEFAULT_ROOT)
+    if names:
+        missing = set(names) - {c.name for c in clips}
+        if missing:
+            raise typer.BadParameter(f"not in {split}: {', '.join(sorted(missing))}")
+        clips = [c for c in clips if c.name in names]
     return clips[:SMOKE_CLIPS] if smoke else (clips[:limit] if limit else clips)
 
 
@@ -418,7 +423,7 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
         return jersey_summary(predicted, truth, frames)
 
     settings = (
-        [(c, r, o, m) for m in (False, True) for o in (True, False) for r in (1, 2, 3) for c in (0.5, 0.6, 0.7, 0.8)]
+        [(c, r, o, m) for m in (False, True) for o in (True, False) for r in (1, 2, 3, 4, 5) for c in (0.5, 0.6, 0.7, 0.8, 0.9)]
         if grid
         else [(min_conf, min_reads, allow_one, merge_partial)]
     )
@@ -434,11 +439,12 @@ def assemble(
     split: str = "test", smoke: bool = False, name: str = "main", tracker: str = "bytetrack", foot: str = "mask",
     team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
-    jersey_crops: str = "box",
+    jersey_crops: str = "box", clips: list[str] | None = None,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
-    --no-pitch-check keeps every fitted pitch mapping, even implausible or jumpy ones (pitch.checked_homographies)."""
+    --no-pitch-check keeps every fitted pitch mapping, even implausible or jumpy ones (pitch.checked_homographies).
+    --clips SNGS-118 --clips SNGS-121 assembles only those clips."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
@@ -446,7 +452,7 @@ def assemble(
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth)
-    for clip in _clips(split, smoke, limit):
+    for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
         sam_tracks = pq.read_table(sam_path).to_pandas()
@@ -487,6 +493,35 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
         path.write_text(json.dumps(summary, indent=2))
         held = summary.get("possession_pct", {})
         typer.echo(f"  {clip.name}: possession {held}, fastest {summary.get('fastest', {}).get('top_speed_kmh')} km/h")
+
+
+@app.command()
+def render(clips: list[str], split: str = "test", run: str = "main", tracker: str = "bytetrack",
+           dets: str = "model", backfill: bool = False, max_frames: int | None = None,
+           out_dir: Path = OUT / "videos") -> None:  # fmt: skip
+    """Annotated MP4 of each clip: team-coloured masks, nametags and a radar.
+
+    Nametags show "#?" until the number is first read, then the name from rosters/<clip>.json
+    ("L. Messi"), or "#10" without one; --backfill labels each track from its first frame.
+    Needs the run's game state (`assemble`), SAM's saved masks and the jersey reads."""
+    from pitchview.render import first_reads, load_roster, render_clip
+
+    for clip in _clips(split, False, None, clips):
+        state = pd.read_parquet(OUT / "gamestate" / run / split / f"{clip.name}.parquet")
+        if "sam_obj_id" not in state:
+            raise typer.Exit(f"{run} was assembled before boxes were kept: re-run `assemble --clips {clip.name}`")
+        ball_path = OUT / "gamestate" / run / split / f"{clip.name}_ball.parquet"
+        ball = pd.read_parquet(ball_path) if ball_path.exists() else None
+        mask_path = OUT / "sam_masks" / split / f"{clip.name}.jsonl"
+        masks = _masks(mask_path, {f.index for f in clip.frames}) if mask_path.exists() else {}
+        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        numbers = state.dropna(subset=["jersey"]).groupby("track_id")["jersey"].first().to_dict()
+        first = first_reads(pd.read_parquet(reads_path), numbers, MIN_CONF) if reads_path.exists() else {}
+        roster = load_roster(Path("rosters") / f"{clip.name}.json")
+        path = out_dir / run / f"{clip.name}.mp4"
+        n = render_clip(clip.frames, state, masks, ball, roster, first, path, clip.fps, backfill,
+                        title=f"PitchView  |  {clip.name}", max_frames=max_frames)  # fmt: skip
+        typer.echo(f"  {clip.name}: {n} frames -> {path} ({len(roster.get('left', {})) + len(roster.get('right', {}))} names)")
 
 
 def _torch_module(model):
