@@ -30,6 +30,9 @@ class Variant:
     team_crops: str = "mask"  # jersey embeddings from "mask" or "box" crops
     jersey: bool = True
     smooth: int = 25  # rolling-median window over a track's positions, in frames; 1 = off (25 won on valid x5)
+    # One id for track pieces with the same team and number that never overlap.
+    # Valid x5: ByteTrack GS-HOTA 35.2 -> 36.7 (AssA 50.7 -> 54.9); SAM tracks unchanged.
+    merge_by_jersey: bool = True
 
 
 def _majority(values) -> str | None:
@@ -101,6 +104,27 @@ def _teams(people: pd.DataFrame, embeddings: dict | None, v: Variant) -> dict[in
     return teams
 
 
+def merge_by_jersey(state: pd.DataFrame) -> pd.DataFrame:
+    """Give one track id to pieces of the same player: tracks with the same team and jersey number
+    that never share a frame (a tracker often splits a player at an occlusion or a camera cut).
+    Pieces are chained in time order; each joins the first chain that has ended before it starts."""
+    keyed = state.dropna(subset=["team", "jersey"])
+    spans = keyed.groupby("track_id").agg(
+        team=("team", "first"), jersey=("jersey", "first"), start=("frame", "min"), end=("frame", "max")
+    )
+    new_id: dict[int, int] = {}
+    for _, group in spans.groupby(["team", "jersey"]):
+        chains: list[list[int]] = []  # [first track id, last frame so far]
+        for track, row in group.sort_values("start").iterrows():
+            chain = next((c for c in chains if row["start"] > c[1]), None)
+            if chain is None:
+                chains.append([track, row["end"]])
+            else:
+                new_id[track] = chain[0]
+                chain[1] = row["end"]
+    return state.assign(track_id=state["track_id"].map(lambda t: new_id.get(t, t)))
+
+
 def assemble(
     dets: pd.DataFrame,
     sam: pd.DataFrame,
@@ -132,6 +156,8 @@ def assemble(
     out.loc[out["role"] != "player", "jersey"] = None
     score = out["score"] if "score" in out else out.get("prob", 1.0)
     out = out.assign(score=score, sam_obj_id=out["sam_obj_id"].fillna(-1).astype(int))
+    if v.merge_by_jersey:
+        out = merge_by_jersey(out)
     return out[STATE_COLUMNS].reset_index(drop=True)
 
 

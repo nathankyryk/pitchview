@@ -398,10 +398,12 @@ def detector_score(split: str = "test", dets: str = "model", limit: int | None =
 
 @app.command("jersey-score")
 def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
-                 stride: int = JERSEY_STRIDE, crops: str = "box", min_conf: float = MIN_CONF, min_reads: int = 1, allow_one: bool = False, merge_partial: bool = False,
+                 stride: int = JERSEY_STRIDE, every: int = 1, crops: str = "box", min_conf: float = MIN_CONF,
+                 min_reads: int = 1, allow_one: bool = False, merge_partial: bool = False,
                  grid: bool = False) -> None:  # fmt: skip
     """Score per-track jersey numbers against ground truth, re-voting from the saved raw reads.
-    --grid tries a range of vote settings. Tune on valid, then report the chosen one on test."""
+    --grid tries a range of vote settings. Tune on valid, then report the chosen one on test.
+    --every 3 keeps every 3rd read frame (with --stride 3: as if read every 9th frame)."""
     from pitchview.evaluate import jersey_summary, jersey_truth
     from pitchview.jersey import NOT_PLAYER_NUMBERS, load_reads, vote
 
@@ -409,7 +411,8 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
     for clip in _clips(split, False, limit):
         reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, stride, crops) / split / f"{clip.name}.parquet"
         if reads_path.exists():
-            clips.append((load_reads(reads_path), jersey_truth(_tracks(OUT, split, clip, tracker, dets), clip)))
+            reads = load_reads(reads_path, every, stride)
+            clips.append((reads, jersey_truth(_tracks(OUT, split, clip, tracker, dets), clip)))
     if not clips:
         raise typer.Exit("no saved reads: run `pitchview jerseys` first")
 
@@ -439,7 +442,7 @@ def assemble(
     split: str = "test", smoke: bool = False, name: str = "main", tracker: str = "bytetrack", foot: str = "mask",
     team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
-    jersey_crops: str = "box", clips: list[str] | None = None,
+    jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -451,7 +454,8 @@ def assemble(
     from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
 
     out = _out(smoke)
-    v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth)
+    v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
+                merge_by_jersey=merge_by_jersey)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"

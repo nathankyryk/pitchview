@@ -124,10 +124,14 @@ def vote(reads, min_conf: float = 0.5, min_reads: int = 1, exclude: frozenset = 
     return out
 
 
-def load_reads(path) -> list[tuple[int, str | None, float]]:
-    """The raw reads `pitchview jerseys` saves, as vote() input."""
+def load_reads(path, every: int = 1, stride: int = 1) -> list[tuple[int, str | None, float]]:
+    """The raw reads `pitchview jerseys` saves (a path or the loaded table), as vote() input.
+    every=3 keeps every 3rd read frame of a `stride` read: reads every 3rd frame then stand in
+    for reads every 9th, on the same clips."""
     import pandas as pd
 
-    d = pd.read_parquet(path)
+    d = path if isinstance(path, pd.DataFrame) else pd.read_parquet(path)
+    if every > 1:
+        d = d[((d["frame"] - 1) // stride) % every == 0]
     numbers = d["number"].astype(object).where(d["number"].notna(), None)  # parquet brings None back as NaN
     return list(zip(d["track_id"].astype(int), numbers, d["conf"].astype(float)))

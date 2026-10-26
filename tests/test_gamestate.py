@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from pitchview.gamestate import Variant, assemble, ball_positions, to_predictions
+from pitchview.gamestate import Variant, assemble, ball_positions, merge_by_jersey, to_predictions
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
 H = np.array([[0.1, 0, -50], [0, 0.1, -30], [0, 0, 1]], dtype=float)
@@ -129,3 +129,20 @@ def test_to_predictions_uses_gsr_image_ids():
     assert pred["image_id"] == "2021000003"
     assert pred["attributes"] == {"role": "player", "team": "left", "jersey": "9"}
     assert pred["bbox_pitch"]["x_bottom_middle"] == 1.0
+
+
+def test_merge_by_jersey_joins_pieces_that_never_overlap():
+    def piece(track, frames, team="left", jersey="10"):
+        return [{"frame": f, "track_id": track, "team": team, "jersey": jersey} for f in frames]
+
+    state = pd.DataFrame(
+        piece(1, range(1, 11))
+        + piece(2, range(15, 30))  # same player after a gap: joins 1
+        + piece(3, range(20, 25))  # overlaps 2 in time: a different player (a misread), kept apart
+        + piece(4, range(31, 40))  # after 2 ends: joins the first chain
+        + piece(5, range(1, 40), team="right")  # other team, same number
+        + piece(6, range(12, 14), jersey=None)  # no number: never merged
+    )
+    merged = merge_by_jersey(state).groupby("track_id")["frame"].agg(["min", "max"]).to_dict("index")
+    assert merged == {1: {"min": 1, "max": 39}, 3: {"min": 20, "max": 24}, 5: {"min": 1, "max": 39},
+                      6: {"min": 12, "max": 13}}  # fmt: skip
