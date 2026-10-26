@@ -667,6 +667,28 @@ def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: 
         save.write_text(json.dumps({"split": split, "clips": clips, "runs": report}, indent=1))
         typer.echo(f"saved {save}")
 
+@app.command()
+def games(names: list[str], split: str = "test", save: Path | None = None) -> None:
+    """GS-HOTA per game: each test game is 14-19 clips of one match at one stadium, so this shows
+    where the system breaks (an unseen stadium's calibration, say)."""
+    from pitchview.evaluate import gs_hota
+
+    by_game: dict[str, list[str]] = {}
+    for clip in _clips(split, False):
+        by_game.setdefault(str(clip.labels["info"].get("game_id", "?")), []).append(clip.name)
+    order = sorted(by_game, key=lambda g: (not g.isdigit(), int(g) if g.isdigit() else 0))
+    typer.echo(f"{'run':28s} " + " ".join(f"{'game ' + g:>9s}" for g in order))
+    typer.echo(f"{'clips':28s} " + " ".join(f"{len(by_game[g]):9d}" for g in order))
+    report = {}
+    for name in names:
+        report[name] = {g: gs_hota(DEFAULT_ROOT, OUT / "trackers", split, name, by_game[g])["HOTA"] for g in order}
+        typer.echo(f"{name:28s} " + " ".join(f"{report[name][g]:9.1f}" for g in order))
+    if save:
+        save.parent.mkdir(parents=True, exist_ok=True)
+        save.write_text(json.dumps({"split": split, "games": by_game, "runs": report}, indent=1))
+        typer.echo(f"saved {save}")
+
+
 # README labels for the runs in the results table, in table order.
 RUN_LABELS = {
     "baseline": "Official baseline (sn-gamestate: PRTReID + StrongSORT), rescored",
