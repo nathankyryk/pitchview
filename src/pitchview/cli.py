@@ -789,7 +789,7 @@ RUN_LABELS = {
     "main": "**PitchView** (RF-DETR + ByteTrack, SAM 3.1 masks)",
     "sam": "PitchView with SAM 3.1's own tracks",
     "main_nomerge": "without track linking by jersey",
-    "main_s5": "without pitch checks, 5-frame smoothing",
+    "main_s5": "without pitch checks or track linking, 5-frame smoothing",
     "nojersey": "without jersey numbers",
     "boxfoot": "foot point from the box, not the mask",
     "boxteam": "teams from box crops, not mask crops",
