@@ -120,6 +120,37 @@ def _tab(gr, bundle: Path, manifest: dict, tab: str, clip: str) -> tuple:
     return tab, video, score, stats
 
 
+# Restart both compare videos together (they are separate players, so this is how they line up).
+PLAY_BOTH = """() => {
+  const videos = ["#compare-a video", "#compare-b video"].map((s) => document.querySelector(s)).filter(Boolean);
+  videos.forEach((v) => { v.pause(); v.currentTime = 0; });
+  videos.forEach((v) => v.play());
+}"""
+PAUSE_BOTH = """() => {
+  ["#compare-a video", "#compare-b video"].forEach((s) => document.querySelector(s)?.pause());
+}"""
+
+
+def _compare(gr, bundle: Path, tabs: list[str], clip: str) -> tuple:
+    """Any two tabs side by side on the same clip."""
+    titles = [(TABS[t][0], t) for t in tabs]
+    left, right = (tabs[0], tabs[-1]) if "foundation" not in tabs else ("foundation", tabs[-1])
+    with gr.Tab("Compare", id="compare"):
+        gr.Markdown("Any two tabs side by side on the same clip.")
+        with gr.Row():
+            pick_a = gr.Dropdown(choices=titles, value=left, label="Left")
+            pick_b = gr.Dropdown(choices=titles, value=right, label="Right")
+        with gr.Row():
+            video_a = gr.Video(value=video_path(bundle, left, clip), show_label=False, elem_id="compare-a")
+            video_b = gr.Video(value=video_path(bundle, right, clip), show_label=False, elem_id="compare-b")
+        with gr.Row():
+            play = gr.Button("Play both from the start", variant="primary")
+            pause = gr.Button("Pause both")
+    play.click(None, js=PLAY_BOTH)
+    pause.click(None, js=PAUSE_BOTH)
+    return pick_a, pick_b, video_a, video_b
+
+
 def build(bundle: Path):
     """The Gradio app for a bundle. Call .launch() on the result."""
     import gradio as gr
@@ -135,12 +166,20 @@ def build(bundle: Path):
         clip = gr.Dropdown(choices=[(clip_label(manifest, c), c) for c in clips], value=first, label="Clip")
         with gr.Tabs(selected="full" if "full" in tabs else None):
             widgets = [_tab(gr, bundle, manifest, tab, first) for tab in tabs]
+            compare = _compare(gr, bundle, tabs, first) if len(tabs) > 1 else None
 
-        def show(name: str) -> list:
+        def show(name: str, *picks: str) -> list:
             out = []
             for tab, *_ in widgets:
                 out += [video_path(bundle, tab, name), score_card(manifest, name, tab), stats_card(manifest, name)]
-            return out
+            return out + [video_path(bundle, tab, name) for tab in picks]
 
-        clip.change(show, clip, [w for _, *ws in widgets for w in ws])
+        outputs = [w for _, *ws in widgets for w in ws]
+        if compare:
+            pick_a, pick_b, video_a, video_b = compare
+            clip.change(show, [clip, pick_a, pick_b], outputs + [video_a, video_b])
+            pick_a.change(lambda name, tab: video_path(bundle, tab, name), [clip, pick_a], video_a)
+            pick_b.change(lambda name, tab: video_path(bundle, tab, name), [clip, pick_b], video_b)
+        else:
+            clip.change(show, clip, outputs)
     return app

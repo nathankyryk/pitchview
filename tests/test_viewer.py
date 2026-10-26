@@ -47,3 +47,15 @@ def test_app_builds_from_a_bundle(tmp_path):
 
 def test_no_nan_makes_stats_json_safe():
     assert _no_nan({"a": [float("nan"), 1.5], "b": {"c": float("nan")}}) == {"a": [None, 1.5], "b": {"c": None}}
+
+
+def test_compare_tab_appears_with_two_tabs(tmp_path):
+    import json
+
+    (tmp_path / "manifest.json").write_text(json.dumps(MANIFEST))
+    for tab in ("foundation", "full"):
+        (tmp_path / "videos" / tab).mkdir(parents=True)
+        (tmp_path / "videos" / tab / "SNGS-118.mp4").write_bytes(b"")
+    app = build(tmp_path)
+    labels = {c.get("props", {}).get("label") for c in app.get_config_file()["components"]}
+    assert {"Compare", "Foundation", "Full system", "Left", "Right"} <= labels
