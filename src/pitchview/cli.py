@@ -898,13 +898,14 @@ def _no_nan(value):
 
 @app.command()
 def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str = "test", out: Path = Path("demo"),
-           results: list[Path] | None = None, tabs: list[str] | None = None) -> None:  # fmt: skip
+           results: list[Path] | None = None, tabs: list[str] | None = None, height: int = 0) -> None:  # fmt: skip
     """Collect the viewer's files: each clip's video per tab (rendered first if missing), its
     scores from `eval --save` JSON files (later files win) and its match stats. Then `pitchview viewer`.
     --tabs (repeatable): full, truth, specialist, foundation; all four by default. The foundation tab's
-    score is --sam-run's: the full system with SAM 3.1's tracks."""
+    score is --sam-run's: the full system with SAM 3.1's tracks. --height 720 re-encodes the videos
+    smaller (for the Hugging Face Space); 0 copies them as rendered."""
     from pitchview.analytics import summarise
-    from pitchview.render import faststart
+    from pitchview.render import faststart, shrink
 
     runs: dict = {}
     for path in results or EVAL_RESULTS:
@@ -929,9 +930,12 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
                 render([clip.name], split=split, run=run, tab=tab)
             dest = out / "videos" / tab / f"{clip.name}.mp4"
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(video, dest)
-            faststart(dest)
-            typer.echo(f"  {clip.name}: {dest}")
+            if height:
+                shrink(video, dest, height)
+            else:
+                shutil.copyfile(video, dest)
+                faststart(dest)
+            typer.echo(f"  {clip.name}: {dest} ({dest.stat().st_size / 1e6:.0f} MB)")
         sam_score = runs.get(sam_run, {}).get("gs", {}).get("clips", {}).get(clip.name)
         state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"
         ball_path = state_path.with_name(f"{clip.name}_ball.parquet")

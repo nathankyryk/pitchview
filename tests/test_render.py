@@ -135,3 +135,27 @@ def test_faststart_moves_the_index_first(tmp_path):
     assert index_first(path)
     with av.open(str(path)) as c:
         assert sum(1 for _ in c.decode(video=0)) == 10
+
+
+def test_shrink_reencodes_smaller_with_the_index_first(tmp_path):
+    import av
+
+    from pitchview.render import index_first, shrink
+
+    src = tmp_path / "big.mp4"
+    with av.open(str(src), "w") as out:
+        stream = out.add_stream("libx264", rate=25)
+        stream.width, stream.height, stream.pix_fmt = 128, 72, "yuv420p"
+        for i in range(8):
+            frame = av.VideoFrame.from_ndarray(np.full((72, 128, 3), i * 25, np.uint8), format="rgb24")
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    dst = tmp_path / "small" / "clip.mp4"
+    shrink(src, dst, height=36)
+    assert index_first(dst)
+    with av.open(str(dst)) as c:
+        s = c.streams.video[0]
+        assert (s.width, s.height) == (64, 36)
+        assert sum(1 for _ in c.decode(video=0)) == 8

@@ -238,6 +238,27 @@ def faststart(path: Path) -> None:
     tmp.replace(path)
 
 
+def shrink(src: Path, dst: Path, height: int = 720, crf: int = 26) -> None:
+    """Re-encode an MP4 at a smaller height (width keeps the aspect ratio), index first: for the
+    Hugging Face Space, where 1080p clips would be ~38 MB each."""
+    import av
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".tmp.mp4")
+    with av.open(str(src)) as inp, av.open(str(tmp), "w", options={"movflags": "faststart"}) as out:
+        source = inp.streams.video[0]
+        width = round(source.width * height / source.height / 2) * 2  # H.264 needs even sizes
+        stream = out.add_stream("libx264", rate=source.average_rate)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        stream.options = {"crf": str(crf), "preset": "medium"}
+        for frame in inp.decode(source):
+            for packet in stream.encode(frame.reformat(width=width, height=height, format="yuv420p")):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    tmp.replace(dst)
+
+
 def blend_mask(frame: np.ndarray, mask: np.ndarray, colour: tuple[int, int, int], alpha: float = MASK_ALPHA) -> None:
     """Tint the mask's pixels and outline it, in place."""
     ys, xs = np.nonzero(mask)
