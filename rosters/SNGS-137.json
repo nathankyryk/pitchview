@@ -1,24 +1,33 @@
 {
-  "match": "Neuchatel Xamax (home, red/black stripes) vs FC St. Gallen (white/green), Swiss Super League - guess from the stadium, confirm",
+  "match": "Neuchatel Xamax 0-1 FC St. Gallen, Swiss Super League 2018-19, 6 April 2019, Stade de la Maladiere (ESPN 514791). Starting XIs: no substitution before 62'.",
   "kits": {
-    "left": "white with green (St. Gallen?)",
-    "right": "red/black stripes (Xamax)"
+    "left": "white with green (FC St. Gallen)",
+    "right": "red/black stripes (Neuchatel Xamax)"
   },
   "left": {
-    "4": "",
-    "10": "",
-    "11": "",
-    "14": "",
-    "36": "",
-    "93": ""
+    "4": "M. Ashimeru",
+    "5": "L. Mosevich",
+    "10": "T. Barnetta",
+    "11": "Y. Tafer",
+    "14": "V. Sierro",
+    "15": "M. Vilotic",
+    "32": "D. Stojanovic",
+    "33": "M. Nuhu",
+    "36": "S. Hefti",
+    "50": "N. Luchinger",
+    "93": "A. Bakayoko"
   },
   "right": {
-    "7": "",
-    "10": "",
-    "16": "",
-    "20": "",
-    "25": "",
-    "26": "",
-    "55": ""
+    "7": "T. Corbaz",
+    "9": "A. Pululu",
+    "10": "C. Doudin",
+    "14": "R. Nuzzolo",
+    "16": "W. Le Pogam",
+    "20": "M. Sejmenovic",
+    "23": "M. Gomes",
+    "25": "M. Oss",
+    "26": "G. Serey Die",
+    "30": "L. Walthert",
+    "55": "I. Djuric"
   }
 }
