@@ -41,12 +41,40 @@ TRACK_SCHEMA = pa.schema(
 )
 
 
+def clean_mask(mask: np.ndarray, near: float = 0.25, min_share: float = 0.1) -> np.ndarray:
+    """The person without SAM's stray pieces: the largest connected part, plus any part at least
+    `min_share` of its size that touches its box grown by `near` x its height (a leg cut off by
+    an occluder). A third of SAM 3.1's masks carry a stray piece elsewhere in the frame, which
+    stretches the box, moves the foot point and spoils the crops."""
+    import cv2
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if count <= 2:
+        return mask.astype(bool)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    big = 1 + int(np.argmax(areas))
+    x, y, w, h = stats[big, :4]
+    pad = near * h
+    keep = [big]
+    for i in range(1, count):
+        px, py, pw, ph, area = stats[i]
+        touches = px < x + w + pad and px + pw > x - pad and py < y + h + pad and py + ph > y - pad
+        if i != big and touches and area >= min_share * areas[big - 1]:
+            keep.append(i)
+    return np.isin(labels, keep)
+
+
 def mask_features(mask: np.ndarray) -> tuple[float, float, float, float, float, float, int] | None:
-    """Box, foot point and pixel area of one binary mask, or None for an empty mask.
+    """Box, foot point and pixel area of one binary mask (stray pieces removed first, see
+    clean_mask), or None for an empty mask.
 
     The foot point is the median x of the lowest few rows of the mask: where the
     player touches the grass. A box's bottom-centre is often off the body.
     """
+    return _features(clean_mask(mask))
+
+
+def _features(mask: np.ndarray) -> tuple[float, float, float, float, float, float, int] | None:
     ys, xs = np.nonzero(mask)
     if ys.size == 0:
         return None
@@ -182,6 +210,57 @@ class MaskWriter:
         path.write_text("\n".join(json.dumps(r) for r in self.rows) + "\n")
 
 
+def clean_clip(
+    raw_tracks: Path, raw_masks: Path, out_tracks: Path, out_masks: Path,
+    raw_emb: Path | None = None, out_emb: Path | None = None,
+) -> tuple[int, int]:  # fmt: skip
+    """Re-derive one clip's saved SAM tracks and masks with clean_mask: new boxes, foot points and
+    areas, and cleaned masks. Jersey embeddings (raw_emb -> out_emb) were cropped from the raw
+    mask's box, so those of masks whose box changed are dropped. Returns (masks read, masks that
+    lost a piece)."""
+    import json
+
+    from pycocotools import mask as mask_utils
+
+    tracks = pq.read_table(raw_tracks).to_pandas()
+    row_of = {(int(f), int(o)): i for i, (f, o) in enumerate(zip(tracks["frame"], tracks["obj_id"]))}
+    cols = ["x1", "y1", "x2", "y2", "foot_x", "foot_y", "area"]
+    values = tracks[cols].to_numpy(dtype=float)
+    keep = np.ones(len(tracks), dtype=bool)
+    lines, n, changed = [], 0, 0
+    with Path(raw_masks).open() as f:
+        for line in f:
+            r = json.loads(line)
+            raw = mask_utils.decode({"size": r["size"], "counts": r["counts"]}).astype(bool)
+            mask = clean_mask(raw)
+            n += 1
+            if mask.sum() != raw.sum():
+                changed += 1
+                r["counts"] = mask_utils.encode(np.asfortranarray(mask.astype(np.uint8)))["counts"].decode()
+            lines.append(json.dumps(r))
+            i = row_of.get((int(r["frame"]), int(r["obj_id"])))
+            if i is not None:
+                features = _features(mask)
+                if features is None:
+                    keep[i] = False
+                else:
+                    values[i] = features
+    moved = np.abs(values[:, :4] - tracks[cols[:4]].to_numpy(dtype=float)).max(axis=1) > 1
+    stale = set(zip(tracks.loc[moved, "frame"].astype(int), tracks.loc[moved, "obj_id"].astype(int)))
+    tracks[cols] = values
+    tracks["area"] = tracks["area"].astype("int32")
+    tracks = tracks[keep]
+    out_tracks.parent.mkdir(parents=True, exist_ok=True)
+    out_masks.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pandas(tracks, schema=TRACK_SCHEMA, preserve_index=False), out_tracks)
+    Path(out_masks).write_text("\n".join(lines) + "\n")
+    if raw_emb is not None and out_emb is not None and Path(raw_emb).exists():
+        emb = dict(np.load(raw_emb))
+        ok = np.array([(int(f), int(o)) not in stale for f, o in zip(emb["frame"], emb["obj_id"])], dtype=bool)
+        np.savez_compressed(out_emb, **{k: v[ok] for k, v in emb.items()})
+    return n, changed
+
+
 def write_tracks(
     tracker,
     clip: Clip,
@@ -192,13 +271,16 @@ def write_tracks(
 ) -> int:
     """Run a tracker over a clip and write one row per object per frame. Returns the row count.
 
-    `on_frame` sees every frame's raw masks while they are in memory, which is where
+    `on_frame` sees every frame's masks while they are in memory, which is where
     jersey embeddings and demo masks are computed (masks are too big to keep).
+    Masks are cleaned first (clean_mask), so features, embeddings and saved masks agree.
     """
     rows: dict[str, list] = {name: [] for name in TRACK_SCHEMA.names}
     for frame_index, out in tracker.track(clip, prompt=prompt, max_frames=max_frames):
+        masks = [clean_mask(m) for m in np.asarray(out["out_binary_masks"])]
+        out = {**out, "out_binary_masks": np.stack(masks) if masks else out["out_binary_masks"]}
         for obj_id, prob, mask in zip(out["out_obj_ids"], out["out_probs"], out["out_binary_masks"]):
-            features = mask_features(mask)
+            features = _features(mask)
             if features is None:
                 continue
             x1, y1, x2, y2, foot_x, foot_y, area = features

@@ -310,6 +310,37 @@ def _jersey_dir(out: Path, kind: str, tracker: str, dets: str, stride: int, crop
     return out / f"{kind}_{tracker}_{dets}{suffix}"
 
 
+@app.command("clean-masks")
+def clean_masks(split: str = "test", limit: int | None = None, workers: int = 8) -> None:
+    """Remove SAM's stray mask pieces from saved outputs (segment.clean_mask) and recompute each box,
+    foot point and area. The first run copies the originals to sam_raw/ and sam_masks_raw/, and every
+    run reads from there. Jersey embeddings cropped from a box that changed are dropped (the rest
+    are kept). `sam` runs on a pod save clean masks and embeddings already."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from pitchview.segment import clean_clip
+
+    jobs = {}
+    for clip in _clips(split, False, limit):
+        tracks, masks = OUT / "sam" / split / f"{clip.name}.parquet", OUT / "sam_masks" / split / f"{clip.name}.jsonl"
+        raw_tracks = OUT / "sam_raw" / split / tracks.name
+        raw_masks = OUT / "sam_masks_raw" / split / masks.name
+        if not (masks.exists() or raw_masks.exists()):
+            typer.echo(f"  {clip.name}: no saved masks, skipped")
+            continue
+        emb, raw_emb = tracks.with_suffix(".npz"), raw_tracks.with_suffix(".npz")
+        for src, dst in ((tracks, raw_tracks), (masks, raw_masks), (emb, raw_emb)):
+            if src.exists() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+        jobs[clip.name] = (raw_tracks, raw_masks, tracks, masks, raw_emb, emb)
+    with ProcessPoolExecutor(workers) as pool:
+        futures = {pool.submit(clean_clip, *job): name for name, job in jobs.items()}
+        for future in as_completed(futures):
+            n, changed = future.result()
+            typer.echo(f"  {futures[future]}: {changed} of {n} masks lost a stray piece ({changed / max(n, 1):.0%})")
+
+
 def _masks(path: Path, frames: set[int]) -> dict[tuple[int, int], dict]:
     """SAM's saved masks (COCO RLE) for the given frames, by (frame, object id)."""
     out = {}
@@ -563,13 +594,14 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
 
 
 @app.command()
-def render(clips: list[str], split: str = "test", run: str = "main", tracker: str = "bytetrack",
-           dets: str = "model", backfill: bool = False, max_frames: int | None = None,
+def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str = "sam",
+           dets: str = "model", backfill: bool = True, max_frames: int | None = None,
            out_dir: Path = OUT / "videos", tab: str = "full") -> None:  # fmt: skip
     """Annotated MP4 of each clip: team-coloured masks, nametags and a radar.
 
-    Nametags show "#?" until the number is first read, then the name from rosters/<clip>.json
-    ("L. Messi"), or "#10" without one; --backfill labels each track from its first frame.
+    Nametags show the name from rosters/<clip>.json ("L. Messi"), or "#10" without one, from the
+    track's first frame: the number is voted over the whole track. --no-backfill shows "#?" until
+    the video first reads the number (--tracker must then match the run's, for its reads).
     Needs the run's game state (`assemble`), SAM's saved masks and the jersey reads.
     --tab picks the viewer tab: full (this run), truth (the labels), specialist (--dets boxes with
     ByteTrack ids) or foundation (SAM 3.1's own masks and tracks). Videos go to <out-dir>/<run or tab>/."""
@@ -900,12 +932,13 @@ def _no_nan(value):
 
 
 @app.command()
-def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str = "test", out: Path = Path("demo"),
+def bundle(clips: list[str], run: str = "sam", box_run: str = "main", split: str = "test", out: Path = Path("demo"),
            results: list[Path] | None = None, tabs: list[str] | None = None, height: int = 0) -> None:  # fmt: skip
     """Collect the viewer's files: each clip's video per tab (rendered first if missing), its
     scores from `eval --save` JSON files (later files win) and its match stats. Then `pitchview viewer`.
-    --tabs (repeatable): full, truth, specialist, foundation; all four by default. The foundation tab's
-    score is --sam-run's: the full system with SAM 3.1's tracks. --height 720 re-encodes the videos
+    --tabs (repeatable): full, truth, specialist, foundation; all four by default. The full tab shows
+    --run (SAM 3.1's masks and tracks); the specialist tab's score is --box-run's: the same system on
+    the detector's boxes with ByteTrack. --height 720 re-encodes the videos
     smaller (for the Hugging Face Space); 0 copies them as rendered."""
     from pitchview.analytics import summarise
     from pitchview.render import faststart, shrink
@@ -923,14 +956,16 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
             "gs_hota": runs[run]["gs"]["HOTA"],
             "baseline": baseline.get("HOTA"),
         },
-        "tabs": {"full": run, "foundation": sam_run},
+        "tabs": {"full": run, "specialist": box_run},
         "clips": {},
     }
     for clip in _clips(split, False, None, clips):
         for tab in tabs or ["truth", "specialist", "foundation", "full"]:
             video = OUT / "videos" / (run if tab == "full" else tab) / f"{clip.name}.mp4"
             if not video.exists():
-                render([clip.name], split=split, run=run, tab=tab)
+                render(
+                    [clip.name], split=split, run=run, tab=tab, tracker="sam" if run.startswith("sam") else "bytetrack"
+                )
             dest = out / "videos" / tab / f"{clip.name}.mp4"
             dest.parent.mkdir(parents=True, exist_ok=True)
             if height:
@@ -939,7 +974,7 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
                 shutil.copyfile(video, dest)
                 faststart(dest)
             typer.echo(f"  {clip.name}: {dest} ({dest.stat().st_size / 1e6:.0f} MB)")
-        sam_score = runs.get(sam_run, {}).get("gs", {}).get("clips", {}).get(clip.name)
+        box_score = runs.get(box_run, {}).get("gs", {}).get("clips", {}).get(clip.name)
         state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"
         ball_path = state_path.with_name(f"{clip.name}_ball.parquet")
         ball = pd.read_parquet(ball_path) if ball_path.exists() else None
@@ -950,9 +985,9 @@ def bundle(clips: list[str], run: str = "main", sam_run: str = "sam", split: str
                     "gs_hota": runs[run]["gs"]["clips"].get(clip.name),
                     "baseline": baseline.get("clips", {}).get(clip.name),
                 },
-                "foundation": {
-                    "gs_hota": sam_score,
-                    "note": "The full system using SAM 3.1's tracks in place of ByteTrack's.",
+                "specialist": {
+                    "gs_hota": box_score,
+                    "note": "The full system on these boxes, with ByteTrack in place of SAM 3.1's tracks.",
                 },
             },
             "stats": summarise(pd.read_parquet(state_path), ball, clip.fps),

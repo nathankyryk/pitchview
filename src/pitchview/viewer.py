@@ -42,9 +42,10 @@ TABS = {
     "full": (
         "Full system",
         (
-            "Fine-tuned RF-DETR finds players, goalkeepers, referees and the ball. SAM 3.1 masks are matched "
-            "to its boxes, ByteTrack follows each person, teams come from kit colours, jersey numbers are "
-            "read and voted per track, and the fine-tuned pitch model places everyone on the radar."
+            "SAM 3.1 masks and tracks every person; the fine-tuned RF-DETR detector gives each mask its role "
+            "(player, goalkeeper or referee) and finds the ball. Teams come from the masked kit colours, each "
+            "jersey number is voted over the whole track and tied to that mask, and the fine-tuned pitch model "
+            "places everyone on the radar."
         ),
     ),
 }

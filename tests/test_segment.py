@@ -8,6 +8,8 @@ from pitchview.segment import (
     MaskWriter,
     attach_masks,
     box_iou,
+    clean_clip,
+    clean_mask,
     drop_offload_state_arg,
     mask_features,
     write_tracks,
@@ -31,6 +33,48 @@ def test_mask_features_foot_follows_the_legs():
     _, _, _, y2, foot_x, foot_y, _ = mask_features(mask)
     assert y2 == 90 and foot_y == 90
     assert foot_x > 44  # the box centre (40) would be 4+ px off the foot
+
+
+def test_clean_mask_drops_stray_pieces_and_keeps_a_cut_off_leg():
+    mask = np.zeros((200, 200), dtype=bool)
+    mask[20:70, 40:60] = True  # the body
+    mask[74:94, 48:54] = True  # a leg below a gap (an occluder): near and big enough, kept
+    mask[150:160, 150:170] = True  # a stray piece far away: dropped
+    mask[18:19, 70:71] = True  # a speck right by the body but tiny: dropped
+    clean = clean_mask(mask)
+    assert clean[20:70, 40:60].all() and clean[74:94, 48:54].all()
+    assert not clean[150:160, 150:170].any() and not clean[18, 70]
+    x1, y1, x2, y2, _, foot_y, _ = mask_features(mask)
+    assert (x1, y1, x2, y2) == (40, 20, 60, 94) and foot_y == 94  # not stretched to (170, 160)
+
+
+def test_clean_clip_rewrites_tracks_and_masks(tmp_path):
+    import json
+
+    from pycocotools import mask as mask_utils
+
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[10:60, 20:40] = 1
+    mask[90:95, 90:95] = 1  # stray
+    rle = mask_utils.encode(np.asfortranarray(mask))
+    (tmp_path / "raw.jsonl").write_text(
+        json.dumps({"frame": 1, "obj_id": 4, "size": rle["size"], "counts": rle["counts"].decode()}) + "\n"
+    )
+    raw = pd.DataFrame([{"clip": "c", "frame": 1, "obj_id": 4, "prob": 0.9, "x1": 20.0, "y1": 10.0, "x2": 95.0,
+                         "y2": 95.0, "foot_x": 92.0, "foot_y": 95.0, "area": 1025}])  # fmt: skip
+    raw.to_parquet(tmp_path / "raw.parquet")
+    emb = {"frame": np.array([1, 6]), "obj_id": np.array([4, 4]), "box": np.eye(2), "mask": np.eye(2)}
+    np.savez(tmp_path / "raw.npz", **emb)  # frame 1 was cropped from the stretched box; frame 6 is untouched
+    n, changed = clean_clip(
+        tmp_path / "raw.parquet", tmp_path / "raw.jsonl", tmp_path / "t.parquet", tmp_path / "m.jsonl",
+        tmp_path / "raw.npz", tmp_path / "e.npz",
+    )  # fmt: skip
+    assert (n, changed) == (1, 1)
+    assert list(np.load(tmp_path / "e.npz")["frame"]) == [6]
+    row = pd.read_parquet(tmp_path / "t.parquet").iloc[0]
+    assert (row.x1, row.y1, row.x2, row.y2, row.foot_y, row.area) == (20, 10, 40, 60, 60, 1000)
+    saved = json.loads((tmp_path / "m.jsonl").read_text())
+    assert mask_utils.area({"size": saved["size"], "counts": saved["counts"]}) == 1000
 
 
 def test_mask_features_empty():

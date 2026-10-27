@@ -2,8 +2,9 @@
 
 - Each person's SAM 3.1 mask is filled in their team's kit colour (ByteTrack people without a
   matching mask get a box outline instead).
-- A nametag sits above each player: "#?" until the video first reads their number, then the
-  name from the clip's roster ("L. Messi"), or "#10" when the roster has no name.
+- A nametag sits above each player: the name from the clip's roster ("L. Messi"), or "#10" when
+  the roster has no name. The number is voted over the whole track, so it shows from the track's
+  first frame (backfill); without backfill the tag reads "#?" until the video first reads it.
 - A radar in the corner shows everyone on a 105 x 68 m pitch, plus the ball.
 
 style="tracks" draws perception only, for the viewer's specialist and foundation tabs: each box or
