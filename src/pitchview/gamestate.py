@@ -33,6 +33,20 @@ class Variant:
     # One id for track pieces with the same team and number that never overlap.
     # Valid x5: ByteTrack GS-HOTA 35.2 -> 36.7 (AssA 50.7 -> 54.9); SAM tracks unchanged.
     merge_by_jersey: bool = True
+    # SAM tracks only: keep a person only in frames within this many frames of a match to one of
+    # RF-DETR's player, goalkeeper or referee boxes; negative keeps every frame SAM tracked.
+    # Valid x5 GS-HOTA: every frame 25.7; gap 0 24.1, 3 27.7, 10 27.7, 25 27.4.
+    sam_box_gap: int = 3
+
+
+def _near(frames: np.ndarray, anchors: np.ndarray, gap: int) -> np.ndarray:
+    """True where a frame is within `gap` frames of an anchor frame (anchors sorted)."""
+    if len(anchors) == 0:
+        return np.zeros(len(frames), dtype=bool)
+    i = np.searchsorted(anchors, frames)
+    left = anchors[np.clip(i - 1, 0, len(anchors) - 1)]
+    right = anchors[np.clip(i, 0, len(anchors) - 1)]
+    return np.minimum(np.abs(frames - left), np.abs(frames - right)) <= gap
 
 
 def _majority(values) -> str | None:
@@ -62,6 +76,13 @@ def _people(dets: pd.DataFrame, sam: pd.DataFrame, n_frames: int, fps: float, v:
         best = iou.argmax(1)
         ok = iou.max(1) >= 0.5
         people.loc[rows.index[ok], "role"] = d["class_name"].to_numpy()[best[ok]]
+    people["box_role"] = people["role"]  # this frame's match; "role" later becomes the track's majority
+    if v.sam_box_gap >= 0:
+        keep = pd.Series(False, index=people.index)
+        for _, rows in people.groupby("track_id"):
+            anchors = np.sort(rows.loc[rows["role"].notna(), "frame"].to_numpy())
+            keep[rows.index] = _near(rows["frame"].to_numpy(), anchors, v.sam_box_gap)
+        people = people[keep]
     if v.foot == "box":
         people["foot_x"] = (people["x1"] + people["x2"]) / 2
         people["foot_y"] = people["y2"]
@@ -91,6 +112,8 @@ def _teams(people: pd.DataFrame, embeddings: dict | None, v: Variant) -> dict[in
     vectors = embeddings[v.team_crops].astype(np.float32)
     emb_index = {(int(f), int(o)): i for i, (f, o) in enumerate(zip(embeddings["frame"], embeddings["obj_id"]))}
     players = people[(people["role"] == "player") & (people["sam_obj_id"] >= 0)]
+    if "box_role" in players:  # SAM tracks: only crops from frames where the mask is in a player box
+        players = players[players["box_role"] == "player"]
     rows, tracks = [], []
     for frame, obj, track in zip(players["frame"], players["sam_obj_id"], players["track_id"]):
         i = emb_index.get((int(frame), int(obj)))

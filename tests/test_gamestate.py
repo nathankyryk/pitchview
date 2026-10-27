@@ -74,6 +74,20 @@ def test_sam_tracker_takes_ids_from_sam_and_roles_from_detections():
     assert (state["sam_obj_id"] == state["track_id"]).all()
 
 
+def test_sam_box_gap_keeps_sam_people_only_near_detector_boxes():
+    dets = pd.DataFrame([_box(f, 200, 100, 40, 100, "player") for f in range(1, 5)])  # boxes in frames 1-4 only
+    sam = pd.DataFrame([_sam_row(f, 3, (200, 100, 240, 200)) for f in range(1, FRAMES + 1)])
+    kept = {}
+    for gap in (-1, 0, 2):
+        state = assemble(
+            dets, sam, _all_frames(), None, None, FRAMES, v=Variant(tracker="sam", smooth=1, sam_box_gap=gap)
+        )
+        kept[gap] = sorted(state["frame"])
+    assert kept[-1] == list(range(1, FRAMES + 1))  # off: one matched frame keeps the whole track
+    assert kept[0] == [1, 2, 3, 4]
+    assert kept[2] == [1, 2, 3, 4, 5, 6]
+
+
 def test_teams_from_jersey_embeddings_and_goalkeeper_half():
     rng = np.random.default_rng(0)
     red_x, blue_x = (250, 300, 350), (650, 700, 750)  # -25..-15 m vs +15..+25 m
@@ -96,6 +110,28 @@ def test_teams_from_jersey_embeddings_and_goalkeeper_half():
     assert set(players[players["x"] < 0]["team"]) == {"left"}
     assert set(players[players["x"] > 0]["team"]) == {"right"}
     assert set(team_by_x[team_by_x["role"] == "goalkeeper"]["team"]) == {"left"}
+
+
+def test_sam_teams_use_only_crops_inside_player_boxes():
+    # SAM keeps tracking everyone after the detector's boxes stop (frames 5-12), but those crops show
+    # something else (say a spectator in front). They must not decide the teams.
+    rng = np.random.default_rng(0)
+    people = [(250, 100, "red"), (300, 250, "red"), (650, 100, "blue"), (700, 250, "blue")]
+    kit = {"red": np.eye(16)[0], "blue": np.eye(16)[1], "other": np.eye(16)[2]}
+    dets, sam, emb = [], [], {"frame": [], "obj_id": [], "box": [], "mask": []}
+    for f in range(1, FRAMES + 1):
+        for i, (x, y, colour) in enumerate(people):
+            if f <= 4:
+                dets.append(_box(f, x, y, 30, 60, "player"))
+            sam.append(_sam_row(f, 100 + i, (x, y, x + 30, y + 60)))
+            vec = kit[colour if f <= 4 else "other"] + rng.normal(0, 0.03, 16)
+            for key, value in (("frame", f), ("obj_id", 100 + i), ("box", vec), ("mask", vec)):
+                emb[key].append(value)
+    emb = {k: np.array(v) for k, v in emb.items()}
+    v = Variant(tracker="sam", smooth=1, merge_by_jersey=False)
+    state = assemble(pd.DataFrame(dets), pd.DataFrame(sam), _all_frames(), emb, None, FRAMES, v=v)
+    teams = state.groupby("track_id")["team"].first().to_dict()
+    assert teams == {100: "left", 101: "left", 102: "right", 103: "right"}
 
 
 def test_jersey_numbers_go_to_players_only():

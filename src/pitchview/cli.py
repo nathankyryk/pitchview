@@ -503,11 +503,14 @@ def assemble(
     team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
+    sam_box_gap: int = 3,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
     --no-pitch-check keeps every fitted pitch mapping, even implausible or jumpy ones (pitch.checked_homographies).
-    --clips SNGS-118 --clips SNGS-121 assembles only those clips."""
+    --clips SNGS-118 --clips SNGS-121 assembles only those clips.
+    --sam-box-gap N (with --tracker sam) keeps SAM's people only within N frames of a detector box
+    (3, chosen on valid); -1 keeps every frame SAM tracked."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
@@ -515,7 +518,7 @@ def assemble(
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
-                merge_by_jersey=merge_by_jersey)  # fmt: skip
+                merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
@@ -882,7 +885,7 @@ def failures(run: str = "main", split: str = "test", game: str = "11", out: Path
     (out / "captions.md").write_text("\n".join(lines))
 
 
-EVAL_RESULTS = [OUT / "logs" / "eval_test_earlier.json", OUT / "logs" / "eval_test_final.json"]
+EVAL_RESULTS = [OUT / "logs" / f"eval_test_{name}.json" for name in ("earlier", "final", "sam_boxes")]
 
 
 def _no_nan(value):
@@ -988,6 +991,7 @@ RUN_LABELS = {
     "baseline": "Official baseline (sn-gamestate: PRTReID + StrongSORT), rescored",
     "main": "**PitchView** (RF-DETR + ByteTrack, SAM 3.1 masks)",
     "sam": "PitchView with SAM 3.1's own tracks",
+    "sam_allframes": "with SAM 3.1's tracks in every frame, not only near the detector's boxes",
     "main_nomerge": "without track linking by jersey",
     "main_s5": "without pitch checks or track linking, 5-frame smoothing",
     "nojersey": "without jersey numbers",
