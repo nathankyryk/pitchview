@@ -92,7 +92,7 @@ def calibration_case(clips: list, states: dict[str, pd.DataFrame], game: str) ->
 
 def jersey_case(clips: list, tracks: dict[str, pd.DataFrame], numbers: dict[str, dict],
                 reads: dict[str, pd.DataFrame]) -> Case | None:  # fmt: skip
-    """tracks, numbers and reads are per clip and share the reader's track ids (ByteTrack's, before
+    """tracks, numbers and reads are per clip and share the reader's track ids (the tracker's, before
     any linking), so the misread crops can be found again."""
     from pitchview.evaluate import jersey_truth
 

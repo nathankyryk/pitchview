@@ -888,10 +888,12 @@ def position_error(names: list[str], split: str = "test", save: Path | None = No
 
 
 @app.command()
-def failures(run: str = "main", split: str = "test", game: str = "11", out: Path = OUT / "failures") -> None:
+def failures(run: str = "main", split: str = "test", game: str = "11", out: Path = OUT / "failures",
+             tracker: str = "bytetrack") -> None:  # fmt: skip
     """Failure examples for the README, each found by a stated rule (see pitchview.failures):
     calibration on the unseen stadium (--game), a jersey misread, a missed ball and an ID switch.
-    Writes PNGs and captions.md to --out."""
+    --tracker is the run's (its jersey reads are searched for the misread). Writes PNGs and
+    captions.md to --out."""
     from pitchview.failures import ball_case, calibration_case, draw_case, id_switch_case, jersey_case
 
     clips = _clips(split, False)
@@ -902,14 +904,12 @@ def failures(run: str = "main", split: str = "test", game: str = "11", out: Path
         if state_path.exists():
             states[clip.name] = pd.read_parquet(state_path)
         dets[clip.name] = _detections(OUT, split, clip, "model")
-        reads_path = (
-            _jersey_dir(OUT, "jersey_reads", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
-        )
-        numbers_path = _jersey_dir(OUT, "jerseys", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.json"
+        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        numbers_path = _jersey_dir(OUT, "jerseys", tracker, "model", JERSEY_STRIDE) / split / f"{clip.name}.json"
         if reads_path.exists() and numbers_path.exists():
             reads[clip.name] = pd.read_parquet(reads_path)
             numbers[clip.name] = {int(k): v for k, v in json.loads(numbers_path.read_text()).items()}
-            tracks[clip.name] = _tracks(OUT, split, clip, "bytetrack", "model")
+            tracks[clip.name] = _tracks(OUT, split, clip, tracker, "model")
     cases = [
         calibration_case(clips, states, game),
         jersey_case(clips, tracks, numbers, reads),
