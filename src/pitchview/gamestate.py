@@ -17,7 +17,7 @@ from pitchview.evaluate import prediction
 from pitchview.pitch import nearest_homography, to_pitch
 from pitchview.segment import attach_masks, box_iou
 from pitchview.teams import cluster_teams, name_sides
-from pitchview.track import bytetrack
+from pitchview.track import PEOPLE, bytetrack
 
 BOX = ["x1", "y1", "x2", "y2"]
 STATE_COLUMNS = ["frame", "track_id", "role", "team", "jersey", "x_m", "y_m", "score", *BOX, "sam_obj_id"]
@@ -53,7 +53,7 @@ def _people(dets: pd.DataFrame, sam: pd.DataFrame, n_frames: int, fps: float, v:
     people = sam.rename(columns={"obj_id": "track_id"}).copy()
     people["sam_obj_id"] = people["track_id"]
     people["role"] = None
-    dets_by_frame = {f: d for f, d in dets[dets["class_name"] != "ball"].groupby("frame")}
+    dets_by_frame = {f: d for f, d in dets[dets["class_name"].isin(PEOPLE)].groupby("frame")}
     for frame, rows in people.groupby("frame"):
         d = dets_by_frame.get(frame)
         if d is None:

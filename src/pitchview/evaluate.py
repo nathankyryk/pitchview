@@ -88,7 +88,8 @@ def detection_ap(clips: list[Clip], detections: dict[str, pd.DataFrame], stride:
                                         "bbox": bbox, "area": bbox[2] * bbox[3], "iscrowd": 0})  # fmt: skip
             d = dets_by_frame.get(frame.index)
             if d is not None:
-                for r in d.itertuples(index=False):
+                # RF-DETR has one output slot more than its classes; the odd box lands there unnamed
+                for r in d[d["class_name"].isin(class_ids)].itertuples(index=False):
                     results.append({"image_id": image_id, "category_id": class_ids[r.class_name],
                                     "bbox": [r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1], "score": float(r.score)})  # fmt: skip
     gt = COCO()

@@ -30,3 +30,7 @@ def test_detection_ap_is_perfect_for_the_labels_and_zero_for_a_missed_class(gsr_
 
     no_ball = detection_ap([clip], {clip.name: _perfect_detections(clip, drop_ball=True)}, stride=1)
     assert no_ball["ball"]["ap"] == 0 and no_ball["player"]["ap"] > 0.99
+
+    unnamed = _perfect_detections(clip)  # a box from the detector's unnamed extra class is skipped
+    unnamed = pd.concat([unnamed, unnamed.head(1).assign(class_name="4", score=0.2)], ignore_index=True)
+    assert detection_ap([clip], {clip.name: unnamed}, stride=1)["player"]["ap"] > 0.99
