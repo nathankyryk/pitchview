@@ -821,6 +821,43 @@ def position_error(names: list[str], split: str = "test", save: Path | None = No
         typer.echo(f"saved {save}")
 
 
+@app.command()
+def failures(run: str = "main", split: str = "test", game: str = "11", out: Path = OUT / "failures") -> None:
+    """Failure examples for the README, each found by a stated rule (see pitchview.failures):
+    calibration on the unseen stadium (--game), a jersey misread, a missed ball and an ID switch.
+    Writes PNGs and captions.md to --out."""
+    from pitchview.failures import ball_case, calibration_case, draw_case, id_switch_case, jersey_case
+
+    clips = _clips(split, False)
+    by_name = {c.name: c for c in clips}
+    states, tracks, numbers, reads, dets = {}, {}, {}, {}, {}
+    for clip in clips:
+        state_path = OUT / "gamestate" / run / split / f"{clip.name}.parquet"
+        if state_path.exists():
+            states[clip.name] = pd.read_parquet(state_path)
+        dets[clip.name] = _detections(OUT, split, clip, "model")
+        reads_path = _jersey_dir(OUT, "jersey_reads", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        numbers_path = _jersey_dir(OUT, "jerseys", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.json"
+        if reads_path.exists() and numbers_path.exists():
+            reads[clip.name] = pd.read_parquet(reads_path)
+            numbers[clip.name] = {int(k): v for k, v in json.loads(numbers_path.read_text()).items()}
+            tracks[clip.name] = _tracks(OUT, split, clip, "bytetrack", "model")
+    cases = [
+        calibration_case(clips, states, game),
+        jersey_case(clips, tracks, numbers, reads),
+        ball_case(clips, dets),
+        id_switch_case(clips, states),
+    ]
+    out.mkdir(parents=True, exist_ok=True)
+    lines = [f"# Failure examples ({run}, {split} split)", ""]
+    for case in filter(None, cases):
+        path = out / f"{case.kind}.png"
+        draw_case(case, by_name[case.clip], path)
+        lines += [f"## {case.kind}", "", f"![{case.kind}]({case.kind}.png)", "", case.caption, ""]
+        typer.echo(f"  {case.kind}: {path}\n    {case.caption}")
+    (out / "captions.md").write_text("\n".join(lines))
+
+
 EVAL_RESULTS = [OUT / "logs" / "eval_test_earlier.json", OUT / "logs" / "eval_test_final.json"]
 
 
