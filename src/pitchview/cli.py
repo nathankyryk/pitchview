@@ -991,6 +991,7 @@ RUN_LABELS = {
     "main_nomerge": "without track linking by jersey",
     "main_s5": "without pitch checks or track linking, 5-frame smoothing",
     "nojersey": "without jersey numbers",
+    "main_j3": "jersey reads every 3rd frame, not every 10th",
     "boxfoot": "foot point from the box, not the mask",
     "boxteam": "teams from box crops, not mask crops",
     "offtheshelf": "off-the-shelf pitch model",
