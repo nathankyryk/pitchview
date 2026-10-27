@@ -534,22 +534,25 @@ def assemble(
     team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
-    sam_box_gap: int = 3,
+    sam_box_gap: int = 3, split_by_jersey: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
     --no-pitch-check keeps every fitted pitch mapping, even implausible or jumpy ones (pitch.checked_homographies).
     --clips SNGS-118 --clips SNGS-121 assembles only those clips.
     --sam-box-gap N (with --tracker sam) keeps SAM's people only within N frames of a detector box
-    (3, chosen on valid); -1 keeps every frame SAM tracked."""
+    (3, chosen on valid); -1 keeps every frame SAM tracked.
+    --split-by-jersey splits a track where its jersey reads switch number (the tracker jumped
+    to another player), from the saved reads."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
+    from pitchview.jersey import split_votes
     from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
-                merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap)  # fmt: skip
+                merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
@@ -566,7 +569,13 @@ def assemble(
         jersey_dir = _jersey_dir(out, "jerseys", tracker, dets, jersey_stride, jersey_crops)
         jersey_path = jersey_dir / split / f"{clip.name}.json"
         numbers = {int(k): v for k, v in json.loads(jersey_path.read_text()).items()} if jersey_path.exists() else None
-        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v)
+        reads_path = (
+            _jersey_dir(out, "jersey_reads", tracker, dets, jersey_stride, jersey_crops)
+            / split
+            / f"{clip.name}.parquet"
+        )
+        pieces = split_votes(reads_path) if split_by_jersey and reads_path.exists() else None
+        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v, pieces)
         state_path = out / "gamestate" / name / split / f"{clip.name}.parquet"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state.to_parquet(state_path)

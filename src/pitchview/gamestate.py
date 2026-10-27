@@ -37,6 +37,10 @@ class Variant:
     # RF-DETR's player, goalkeeper or referee boxes; negative keeps every frame SAM tracked.
     # Valid x5 GS-HOTA: every frame 25.7; gap 0 24.1, 3 27.7, 10 27.7, 25 27.4.
     sam_box_gap: int = 3
+    # Split a track where its jersey reads switch number for good (jersey.split_votes): the
+    # tracker jumped to another player. Needs `pieces` in assemble(). Valid x5 GS-HOTA: SAM tracks
+    # 36.3 -> 36.4, ByteTrack 36.5 -> 36.6 (8 and 4 tracks split): about even; it fixes the demo's names.
+    split_by_jersey: bool = True
 
 
 def _near(frames: np.ndarray, anchors: np.ndarray, gap: int) -> np.ndarray:
@@ -148,6 +152,26 @@ def merge_by_jersey(state: pd.DataFrame) -> pd.DataFrame:
     return state.assign(track_id=state["track_id"].map(lambda t: new_id.get(t, t)))
 
 
+def split_by_jersey(state: pd.DataFrame, pieces: dict[int, list[tuple[int, str | None]]]) -> pd.DataFrame:
+    """One track per piece of jersey.split_votes(): pieces after the first get new ids, and each piece
+    takes its own number. Pieces of one player are then joined again by merge_by_jersey."""
+    out = state.copy()
+    next_id = int(out["track_id"].max()) + 1 if len(out) else 0
+    for track, parts in pieces.items():
+        if len(parts) < 2:
+            continue
+        rows = (out["track_id"] == track).to_numpy()
+        frames = out["frame"].to_numpy()
+        for i, (start, number) in enumerate(parts):
+            end = parts[i + 1][0] if i + 1 < len(parts) else np.inf
+            piece = rows & (frames >= start) & (frames < end)
+            out.loc[piece, "jersey"] = number
+            if i > 0:
+                out.loc[piece, "track_id"] = next_id
+                next_id += 1
+    return out
+
+
 def assemble(
     dets: pd.DataFrame,
     sam: pd.DataFrame,
@@ -157,9 +181,11 @@ def assemble(
     n_frames: int,
     fps: float = 25.0,
     v: Variant = Variant(),  # noqa: B008  (frozen dataclass, safe as a default)
+    pieces: dict[int, list[tuple[int, str | None]]] | None = None,
 ) -> pd.DataFrame:
     """One row per person per frame: track_id, role, team, jersey, x_m, y_m, score, and for the
-    video renderer the image box (x1, y1, x2, y2) and SAM's mask id (sam_obj_id, -1 if none)."""
+    video renderer the image box (x1, y1, x2, y2) and SAM's mask id (sam_obj_id, -1 if none).
+    pieces (jersey.split_votes) splits tracks whose number changes, with v.split_by_jersey."""
     people = _to_metres(_people(dets, sam, n_frames, fps, v), homographies)
     if people.empty:
         return pd.DataFrame(columns=STATE_COLUMNS)
@@ -176,6 +202,8 @@ def assemble(
     out["team"] = out["track_id"].map(teams)
     out.loc[~out["role"].isin(["player", "goalkeeper"]), "team"] = None
     out["jersey"] = out["track_id"].map(jerseys or {}) if v.jersey else None
+    if v.jersey and v.split_by_jersey and pieces:
+        out = split_by_jersey(out, pieces)
     out.loc[out["role"] != "player", "jersey"] = None
     score = out["score"] if "score" in out else out.get("prob", 1.0)
     out = out.assign(score=score, sam_obj_id=out["sam_obj_id"].fillna(-1).astype(int))

@@ -124,6 +124,72 @@ def vote(reads, min_conf: float = 0.5, min_reads: int = 1, exclude: frozenset = 
     return out
 
 
+def split_votes(reads, min_conf: float = MIN_CONF, exclude: frozenset = NOT_PLAYER_NUMBERS,
+                min_reads: int = 2) -> dict[int, list[tuple[int, str | None]]]:  # fmt: skip
+    """Per track, [(first frame, number), ...]: one piece with vote()'s number, or several when the
+    track's reads switch number for good. That happens when the tracker jumps from one player to
+    another: on test SNGS-123, SAM 3.1's track 5 follows Thun's #25 for 15 s, then #31, and one
+    vote named both players #31.
+
+    reads: the table `pitchview jerseys` saves (track_id, frame, number, conf). A track splits where
+    its confident reads (as in vote()) say A before and B after; no read at any confidence says A
+    after B's first confident read or B before A's last; A and B are each read at least `min_reads`
+    times on their side, and neither is a digit of the other ("4" is often half of a "14"). The cut
+    sits between the two sure reads where the number changes, halfway from the last (unsure) read
+    of A to the first read of B. Each side is checked again, for a second jump.
+    """
+    import pandas as pd
+
+    d = reads if isinstance(reads, pd.DataFrame) else pd.read_parquet(reads)
+    out = {}
+    for tid, g in d.sort_values(["track_id", "frame"]).groupby("track_id", sort=False):
+        frames = g["frame"].to_numpy(dtype=int)
+        numbers = [n if isinstance(n, str) else None for n in g["number"]]
+        pieces = _pieces(frames, numbers, g["conf"].to_numpy(dtype=float), 0, min_conf, exclude, min_reads, 3)
+        out[int(tid)] = [p for i, p in enumerate(pieces) if i == 0 or p[1] != pieces[i - 1][1]]
+    return out
+
+
+def _pieces(frames, numbers, confs, start, min_conf, exclude, min_reads, depth) -> list[tuple[int, str | None]]:
+    sure = [i for i, (n, c) in enumerate(zip(numbers, confs)) if n is not None and c >= min_conf and n not in exclude]
+
+    def best(idx):
+        score: dict = defaultdict(float)
+        for i in idx:
+            score[numbers[i]] += confs[i]
+        return max(score, key=score.get) if score else None
+
+    cut = None
+    if depth > 0:
+        top = 0.0
+        for k in range(1, len(sure)):
+            before, after = sure[:k], sure[k:]
+            a, b = best(before), best(after)
+            if a == b or a in b or b in a:
+                continue
+            lo, hi = frames[before[-1]], frames[after[0]]
+            if any((n == b and f <= lo) or (n == a and f >= hi) for f, n in zip(frames, numbers)):
+                continue  # read on the wrong side of the switch, at any confidence
+            seen_a = [f for f, n in zip(frames, numbers) if n == a and f < hi]
+            seen_b = [f for f, n in zip(frames, numbers) if n == b and f > lo]
+            if len(seen_a) < min_reads or len(seen_b) < min_reads:
+                continue
+            support = sum(confs[i] for i in before if numbers[i] == a) + sum(confs[i] for i in after if numbers[i] == b)
+            if support > top:  # cut in the gap between these two sure reads, after any unsure A, before any B
+                last_a = max([lo] + [f for f in seen_a if f > lo])
+                first_b = min([hi] + [f for f in seen_b if f < hi])
+                top, cut = support, (last_a + first_b) // 2 + 1 if last_a < first_b else (lo + hi) // 2 + 1
+    if cut is None:
+        return [(start, best(sure))]
+    left = frames < cut
+    early = [n for n, is_left in zip(numbers, left) if is_left]
+    late = [n for n, is_left in zip(numbers, left) if not is_left]
+    rest = (min_conf, exclude, min_reads, depth - 1)
+    return _pieces(frames[left], early, confs[left], start, *rest) + _pieces(
+        frames[~left], late, confs[~left], cut, *rest
+    )
+
+
 def load_reads(path, every: int = 1, stride: int = 1) -> list[tuple[int, str | None, float]]:
     """The raw reads `pitchview jerseys` saves (a path or the loaded table), as vote() input.
     every=3 keeps every 3rd read frame of a `stride` read: reads every 3rd frame then stand in

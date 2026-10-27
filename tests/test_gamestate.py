@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from pitchview.gamestate import Variant, assemble, ball_positions, merge_by_jersey, to_predictions
+from pitchview.gamestate import Variant, assemble, ball_positions, merge_by_jersey, split_by_jersey, to_predictions
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
 H = np.array([[0.1, 0, -50], [0, 0.1, -30], [0, 0, 1]], dtype=float)
@@ -182,3 +182,17 @@ def test_merge_by_jersey_joins_pieces_that_never_overlap():
     merged = merge_by_jersey(state).groupby("track_id")["frame"].agg(["min", "max"]).to_dict("index")
     assert merged == {1: {"min": 1, "max": 39}, 3: {"min": 20, "max": 24}, 5: {"min": 1, "max": 39},
                       6: {"min": 12, "max": 13}}  # fmt: skip
+
+
+def test_split_by_jersey_gives_each_piece_its_own_id_and_number():
+    state = pd.DataFrame(
+        [{"frame": f, "track_id": 5, "jersey": "31"} for f in range(1, 11)]
+        + [{"frame": f, "track_id": 7, "jersey": "9"} for f in range(1, 11)]
+    )
+    out = split_by_jersey(state, {5: [(0, "25"), (4, "31"), (8, "25")], 7: [(0, "9")]})
+    five = out[out["frame"].isin(range(1, 11)) & (state["track_id"] == 5)]
+    assert five["jersey"].tolist() == ["25"] * 3 + ["31"] * 4 + ["25"] * 3
+    assert five["track_id"].tolist() == [5] * 3 + [8] * 4 + [9] * 3  # new ids after the largest one
+    assert (out.loc[state["track_id"] == 7, ["track_id", "jersey"]] == [7, "9"]).all().all()
+    rejoined = merge_by_jersey(five.assign(team="right"))  # the two #25 pieces are one player again
+    assert rejoined["track_id"].tolist() == [5] * 3 + [8] * 4 + [5] * 3
