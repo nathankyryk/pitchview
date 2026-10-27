@@ -59,3 +59,29 @@ def test_compare_tab_appears_with_two_tabs(tmp_path):
     app = build(tmp_path)
     labels = {c.get("props", {}).get("label") for c in app.get_config_file()["components"]}
     assert {"Compare", "Foundation", "Full system", "Left", "Right"} <= labels
+
+
+def test_space_folder_has_app_readme_viewer_and_bundle(tmp_path):
+    import json
+
+    from pitchview.viewer import CREDITS, make_space
+
+    bundle = tmp_path / "bundle"
+    (bundle / "videos" / "full").mkdir(parents=True)
+    (bundle / "manifest.json").write_text(json.dumps(MANIFEST))
+    (bundle / "videos" / "full" / "SNGS-118.mp4").write_bytes(b"0" * 10)
+    out = tmp_path / "space"
+    size = make_space(bundle, out, "6.30.0")
+    assert (out / "demo" / "videos" / "full" / "SNGS-118.mp4").exists()
+    assert "from viewer import build" in (out / "app.py").read_text()
+    assert "def make_space" in (out / "viewer.py").read_text(encoding="utf-8")
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert readme.startswith("---\ntitle: PitchView") and "sdk_version: 6.30.0" in readme
+    assert "SAM 3.1 (Meta, SAM License)" in CREDITS and CREDITS in readme
+    assert size > 10
+    try:
+        make_space(tmp_path / "missing", out, "6.30.0")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("a folder without manifest.json should be refused")

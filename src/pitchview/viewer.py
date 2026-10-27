@@ -12,6 +12,7 @@ Only gradio and the standard library are used here, so the Space needs nothing e
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 # Every tab the viewer knows, in display order: (title, what it shows). A tab appears once the
@@ -62,6 +63,71 @@ def video_path(bundle: Path, tab: str, clip: str) -> str | None:
 def clip_label(manifest: dict, clip: str) -> str:
     game = manifest["clips"][clip].get("game")
     return f"{clip} (game {game})" if game else clip
+
+
+REPO = "https://github.com/nathankyryk/pitchview"
+
+# Shown under the app and in the Space's README. The SAM License asks that published results
+# acknowledge SAM; the clips' broadcast rights stay with the leagues and broadcasters.
+CREDITS = (
+    "**Credits.** Clips: SoccerNet Game State Reconstruction (SN-GSR-2024). The footage belongs to its "
+    "leagues and broadcasters and is shown in short, compressed, annotated excerpts for research and "
+    "demonstration. Models: SAM 3.1 (Meta, SAM License), RF-DETR (Roboflow, Apache-2.0), a pitch keypoint "
+    "model fine-tuned from Roboflow's sports weights with Ultralytics (AGPL-3.0), PARSeq (Apache-2.0) and "
+    "SigLIP (Google, Apache-2.0). Baseline: sn-gamestate (GPL-3.0), rescored with SoccerNet's sn-trackeval. "
+    f"Code and full results: {REPO}"
+)
+
+SPACE_README = """---
+title: PitchView
+emoji: ⚽
+colorFrom: green
+colorTo: gray
+sdk: gradio
+sdk_version: {gradio}
+app_file: app.py
+pinned: false
+license: agpl-3.0
+short_description: Soccer game state from broadcast video, on SoccerNet GSR
+---
+
+# PitchView
+
+Broadcast soccer video in, game state out: every player's team, role, jersey number and position
+on the pitch, frame by frame, scored on SoccerNet's Game State Reconstruction benchmark.
+
+This Space plays pre-rendered test clips and runs no model. Code, method and full results: {repo}
+
+{credits}
+"""
+
+SPACE_APP = '''"""PitchView's demo: pre-rendered clips with their scores. It runs no model. Made by `pitchview space`."""
+
+from pathlib import Path
+
+from viewer import build
+
+build(Path(__file__).parent / "demo").launch()
+'''
+
+
+def make_space(bundle: Path, out: Path, gradio_version: str) -> int:
+    """A Hugging Face Space folder: app.py, a README with the Space settings and credits, this
+    module as viewer.py, the bundle as demo/, and Git LFS rules for the videos. Returns its size in bytes."""
+    bundle, out = Path(bundle), Path(out)
+    if not (bundle / "manifest.json").exists():
+        raise FileNotFoundError(f"{bundle} has no manifest.json: run `pitchview bundle ... --out {bundle}` first")
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(bundle, out / "demo", dirs_exist_ok=True)
+    shutil.copyfile(__file__, out / "viewer.py")
+    files = {
+        "app.py": SPACE_APP,
+        "README.md": SPACE_README.format(gradio=gradio_version, repo=REPO, credits=CREDITS),
+        ".gitattributes": "*.mp4 filter=lfs diff=lfs merge=lfs -text\n",
+    }
+    for name, text in files.items():
+        (out / name).write_text(text, encoding="utf-8", newline="\n")
+    return sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
 
 
 def header(manifest: dict) -> str:
@@ -182,4 +248,5 @@ def build(bundle: Path):
             pick_b.change(lambda name, tab: video_path(bundle, tab, name), [clip, pick_b], video_b)
         else:
             clip.change(show, clip, outputs)
+        gr.Markdown(CREDITS)
     return app

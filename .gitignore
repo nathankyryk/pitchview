@@ -21,3 +21,5 @@ runs/
 .env
 # Viewer bundles: rendered broadcast clips stay off GitHub
 /demo/
+/demo_*/
+/space/
