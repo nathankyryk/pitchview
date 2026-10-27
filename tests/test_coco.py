@@ -16,9 +16,7 @@ def test_convert_every_frame(gsr_root, tmp_path):
 
     coco = json.loads((out / "_annotations.coco.json").read_text())
     assert coco["categories"] == CATEGORIES
-    assert {im["file_name"] for im in coco["images"]} == {
-        f"SNGS-999_{i:06d}.jpg" for i in (1, 2, 4, 5, 6)
-    }
+    assert {im["file_name"] for im in coco["images"]} == {f"SNGS-999_{i:06d}.jpg" for i in (1, 2, 4, 5, 6)}
     assert all((out / im["file_name"]).is_file() for im in coco["images"])
 
     # the referee box is clipped to the 64x36 frame

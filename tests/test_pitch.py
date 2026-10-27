@@ -17,7 +17,9 @@ from pitchview.pitch import (
 # A plausible broadcast camera: pitch metres -> 1920x1080 image pixels.
 PITCH_CORNERS = np.array([[-52.5, -34], [52.5, -34], [52.5, 34], [-52.5, 34]], dtype=np.float64)
 IMAGE_CORNERS = np.array([[300, 150], [1650, 150], [2600, 1300], [-700, 1300]], dtype=np.float64)
-H_TRUE = cv2.getPerspectiveTransform(PITCH_CORNERS.astype(np.float32), IMAGE_CORNERS.astype(np.float32)).astype(np.float64)
+H_TRUE = cv2.getPerspectiveTransform(PITCH_CORNERS.astype(np.float32), IMAGE_CORNERS.astype(np.float32)).astype(
+    np.float64
+)
 H_IMAGE_TO_PITCH = np.linalg.inv(H_TRUE)
 
 

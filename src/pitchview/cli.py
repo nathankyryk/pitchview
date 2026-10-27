@@ -291,7 +291,11 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
     from pitchview.track import bytetrack
 
     if tracker == "sam":
-        return pq.read_table(out / "sam" / split / f"{clip.name}.parquet").to_pandas().rename(columns={"obj_id": "track_id"})
+        return (
+            pq.read_table(out / "sam" / split / f"{clip.name}.parquet")
+            .to_pandas()
+            .rename(columns={"obj_id": "track_id"})
+        )
     tracked = bytetrack(_detections(out, split, clip, dets), len(clip.frames), clip.fps)
     return tracked[tracked["class_name"] == "player"]
 
@@ -409,7 +413,10 @@ def roster_template(clips: list[str], split: str = "test") -> None:
         for b in clip.boxes:
             if b.role == "player" and b.team in numbers and b.jersey:
                 numbers[b.team].add(b.jersey)
-        kits = {side: "rgb({:.0f}, {:.0f}, {:.0f})".format(*np.median(c, axis=0)) if c else "" for side, c in colours.items()}
+        kits = {
+            side: "rgb({:.0f}, {:.0f}, {:.0f})".format(*np.median(c, axis=0)) if c else ""
+            for side, c in colours.items()
+        }
         roster = {
             "match": "",  # "home vs away, competition, date"
             "kits": kits,
@@ -421,7 +428,9 @@ def roster_template(clips: list[str], split: str = "test") -> None:
             continue
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(roster, indent=2) + "\n")
-        typer.echo(f"  {name}: {len(roster['left'])} left / {len(roster['right'])} right numbers, kits {roster['kits']}")
+        typer.echo(
+            f"  {name}: {len(roster['left'])} left / {len(roster['right'])} right numbers, kits {roster['kits']}"
+        )
 
 
 @app.command("detector-score")
@@ -467,15 +476,25 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
         return jersey_summary(predicted, truth, frames)
 
     settings = (
-        [(c, r, o, m) for m in (False, True) for o in (True, False) for r in (1, 2, 3, 4, 5) for c in (0.5, 0.6, 0.7, 0.8, 0.9)]
+        [
+            (c, r, o, m)
+            for m in (False, True)
+            for o in (True, False)
+            for r in (1, 2, 3, 4, 5)
+            for c in (0.5, 0.6, 0.7, 0.8, 0.9)
+        ]
         if grid
         else [(min_conf, min_reads, allow_one, merge_partial)]
     )
     typer.echo(f"{split} / {tracker}: {len(clips)} clips, {sum(len(t) for _, t in clips)} player tracks")
-    typer.echo(f"{'min_conf':>8} {'min_reads':>9} {'allow 1':>7} {'merge':>5} {'agree':>6} {'read':>5} {'precision':>9} {'accuracy':>8}")
+    typer.echo(
+        f"{'min_conf':>8} {'min_reads':>9} {'allow 1':>7} {'merge':>5} {'agree':>6} {'read':>5} {'precision':>9} {'accuracy':>8}"
+    )
     for c, r, o, m in settings:
         s = score(c, r, o, m)
-        typer.echo(f"{c:8.1f} {r:9d} {o!s:>7} {m!s:>5} {s['agree']:6.1%} {s['read']:5.0%} {s['precision']:9.1%} {s['accuracy']:8.1%}")
+        typer.echo(
+            f"{c:8.1f} {r:9d} {o!s:>7} {m!s:>5} {s['agree']:6.1%} {s['read']:5.0%} {s['precision']:9.1%} {s['accuracy']:8.1%}"
+        )
 
 
 @app.command()
@@ -572,7 +591,9 @@ def render(clips: list[str], split: str = "test", run: str = "main", tracker: st
         path = out_dir / run / f"{clip.name}.mp4"
         n = render_clip(clip.frames, state, masks, ball, roster, first, path, clip.fps, backfill,
                         title=f"PitchView  |  {clip.name}", max_frames=max_frames)  # fmt: skip
-        typer.echo(f"  {clip.name}: {n} frames -> {path} ({len(roster.get('left', {})) + len(roster.get('right', {}))} names)")
+        typer.echo(
+            f"  {clip.name}: {n} frames -> {path} ({len(roster.get('left', {})) + len(roster.get('right', {}))} names)"
+        )
 
 
 TAB_TITLES = {
@@ -759,6 +780,7 @@ def evaluate(names: list[str], split: str = "test", smoke: bool = False, limit: 
         save.write_text(json.dumps({"split": split, "clips": clips, "runs": report}, indent=1))
         typer.echo(f"saved {save}")
 
+
 @app.command()
 def games(names: list[str], split: str = "test", save: Path | None = None) -> None:
     """GS-HOTA per game: each test game is 14-19 clips of one match at one stadium, so this shows
@@ -836,7 +858,9 @@ def failures(run: str = "main", split: str = "test", game: str = "11", out: Path
         if state_path.exists():
             states[clip.name] = pd.read_parquet(state_path)
         dets[clip.name] = _detections(OUT, split, clip, "model")
-        reads_path = _jersey_dir(OUT, "jersey_reads", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        reads_path = (
+            _jersey_dir(OUT, "jersey_reads", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        )
         numbers_path = _jersey_dir(OUT, "jerseys", "bytetrack", "model", JERSEY_STRIDE) / split / f"{clip.name}.json"
         if reads_path.exists() and numbers_path.exists():
             reads[clip.name] = pd.read_parquet(reads_path)
@@ -956,7 +980,9 @@ RUN_LABELS = {
 
 
 @app.command()
-def table(results: list[Path], everything: bool = typer.Option(False, "--all", help="also runs without a label")) -> None:
+def table(
+    results: list[Path], everything: bool = typer.Option(False, "--all", help="also runs without a label")
+) -> None:
     """Markdown results table from `eval --detail --save` JSON files (later files win on repeats).
     Only the runs named in RUN_LABELS, in that order, unless --all."""
     runs: dict = {}

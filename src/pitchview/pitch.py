@@ -101,9 +101,7 @@ def oracle_homography(people, min_people: int = 8, min_spread_m: float = 15.0) -
 def keypoint_labels(H: np.ndarray, width: int, height: int, margin: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     """The 32 template keypoints projected into the image, and whether each one is visible."""
     xy = to_image(H, PITCH_KEYPOINTS)
-    visible = (
-        (xy[:, 0] >= -margin) & (xy[:, 0] < width + margin) & (xy[:, 1] >= -margin) & (xy[:, 1] < height + margin)
-    )
+    visible = (xy[:, 0] >= -margin) & (xy[:, 0] < width + margin) & (xy[:, 1] >= -margin) & (xy[:, 1] < height + margin)
     return xy, visible
 
 
@@ -204,7 +202,9 @@ class PitchModel:
         return out
 
 
-def write_keypoints(model: PitchModel, clip: Clip, out_path: Path, batch_size: int = 16, max_frames: int | None = None) -> int:
+def write_keypoints(
+    model: PitchModel, clip: Clip, out_path: Path, batch_size: int = 16, max_frames: int | None = None
+) -> int:
     """Store raw keypoints per frame. Homographies are fitted later, on the laptop, where
     thresholds and smoothing can be tuned without paying for the GPU again."""
     frames = clip.frames[:max_frames] if max_frames else clip.frames

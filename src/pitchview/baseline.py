@@ -62,7 +62,11 @@ def predictions(detections: pd.DataFrame) -> list[dict]:
                 "track_id": int(row.track_id),
                 "supercategory": "object",
                 "category_id": int(row.category_id) if _value(row.category_id) is not None else None,
-                "attributes": {"role": _value(row.role), "team": _value(row.team), "jersey": _jersey(row.jersey_number)},
+                "attributes": {
+                    "role": _value(row.role),
+                    "team": _value(row.team),
+                    "jersey": _jersey(row.jersey_number),
+                },
                 "bbox_pitch": {k: float(v) for k, v in row.bbox_pitch.items()},
             }
         )

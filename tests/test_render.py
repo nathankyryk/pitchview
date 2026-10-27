@@ -25,7 +25,9 @@ def test_short_name():
 
 def test_roster_lookup_and_tag_text(tmp_path):
     path = tmp_path / "SNGS-001.json"
-    path.write_text(json.dumps({"match": "x", "left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}}))
+    path.write_text(
+        json.dumps({"match": "x", "left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}})
+    )
     roster = load_roster(path)
     assert roster == {"left": {"10": "Lionel Messi"}, "right": {"9": "Erling Haaland"}}  # blank names dropped
     assert tag_text("player", "left", "10", True, roster) == "L. Messi"

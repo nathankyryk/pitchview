@@ -109,7 +109,9 @@ def summarise(state: pd.DataFrame, ball: pd.DataFrame | None, fps: float = 25.0)
     if not long_tracks.empty:
         best = long_tracks.sort_values("top_speed_kmh", ascending=False).iloc[0]
         summary["fastest"] = {
-            "team": best["team"], "jersey": best["jersey"], "top_speed_kmh": round(best["top_speed_kmh"], 1)
+            "team": best["team"],
+            "jersey": best["jersey"],
+            "top_speed_kmh": round(best["top_speed_kmh"], 1),
         }
         summary["median_top_speed_kmh"] = round(float(long_tracks["top_speed_kmh"].median()), 1)
     if ball is not None and len(ball):

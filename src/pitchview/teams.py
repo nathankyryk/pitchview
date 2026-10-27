@@ -17,7 +17,9 @@ SIGLIP = "google/siglip-base-patch16-224"
 GREY = 128
 
 
-def jersey_crop(frame: np.ndarray, box: tuple[float, float, float, float], mask: np.ndarray | None = None) -> Image.Image:
+def jersey_crop(
+    frame: np.ndarray, box: tuple[float, float, float, float], mask: np.ndarray | None = None
+) -> Image.Image:
     """The shirt region of one person: from 15% to 60% of the box height.
 
     With a mask, pixels outside the person are set to grey so only jersey colours remain.
@@ -28,9 +30,9 @@ def jersey_crop(frame: np.ndarray, box: tuple[float, float, float, float], mask:
     bottom = y1 + 0.60 * (y2 - y1)
     c0, c1 = max(0, int(x1)), min(w, int(np.ceil(x2)))
     r0, r1 = max(0, int(top)), min(h, int(np.ceil(bottom)))
-    crop = frame[r0:max(r1, r0 + 1), c0:max(c1, c0 + 1)].copy()
+    crop = frame[r0 : max(r1, r0 + 1), c0 : max(c1, c0 + 1)].copy()
     if mask is not None:
-        keep = mask[r0:max(r1, r0 + 1), c0:max(c1, c0 + 1)]
+        keep = mask[r0 : max(r1, r0 + 1), c0 : max(c1, c0 + 1)]
         crop[~keep] = GREY
     return Image.fromarray(crop)
 

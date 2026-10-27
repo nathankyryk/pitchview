@@ -183,11 +183,15 @@ class Radar:
         d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=line, width=w)
         for side in (-1, 1):
             goal_x = side * 52.5
-            d.rectangle(sorted_box(self.px(goal_x, -20.16), self.px(goal_x - side * 16.5, 20.16)), outline=line, width=w)
+            d.rectangle(
+                sorted_box(self.px(goal_x, -20.16), self.px(goal_x - side * 16.5, 20.16)), outline=line, width=w
+            )
             d.rectangle(sorted_box(self.px(goal_x, -9.16), self.px(goal_x - side * 5.5, 9.16)), outline=line, width=w)
         return img
 
-    def draw(self, people: list[tuple[float, float, tuple, str | None]], ball: tuple[float, float] | None) -> np.ndarray:
+    def draw(
+        self, people: list[tuple[float, float, tuple, str | None]], ball: tuple[float, float] | None
+    ) -> np.ndarray:
         """people: (x_m, y_m, colour, label). Returns an RGB array."""
         img = self.base.copy()
         d = ImageDraw.Draw(img)
@@ -332,9 +336,9 @@ def render_clip(
             pane = radar.draw(people, ball_at.get(f.index))
             ph, pw = pane.shape[:2]
             y0, x0 = height - ph - 16, width - pw - 16
-            frame_out[y0 : y0 + ph, x0 : x0 + pw] = (
-                frame_out[y0 : y0 + ph, x0 : x0 + pw] * 0.15 + pane * 0.85
-            ).astype(np.uint8)
+            frame_out[y0 : y0 + ph, x0 : x0 + pw] = (frame_out[y0 : y0 + ph, x0 : x0 + pw] * 0.15 + pane * 0.85).astype(
+                np.uint8
+            )
         for packet in stream.encode(av.VideoFrame.from_ndarray(frame_out, format="rgb24")):
             container.mux(packet)
     for packet in stream.encode():

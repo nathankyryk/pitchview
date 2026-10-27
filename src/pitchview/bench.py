@@ -85,7 +85,9 @@ def bench_ultralytics(model, images: list, warmup: int, device: str | None, imgs
     options = {} if device == "cpu" else {"quantize": "fp16"}  # Ultralytics 8.4 replaced half=True
     if imgsz:
         options["imgsz"] = imgsz
-    return time_per_frame(lambda i: model.predict(images[i], verbose=False, device=device, **options), len(images), warmup)
+    return time_per_frame(
+        lambda i: model.predict(images[i], verbose=False, device=device, **options), len(images), warmup
+    )
 
 
 def bench_reader(reader, images: list, boxes: list[list], warmup: int) -> dict:

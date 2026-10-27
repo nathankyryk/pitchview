@@ -50,7 +50,9 @@ def gsr_root(tmp_path: Path) -> Path:
             _object(10 * i + 4, i, 3, "referee", 60, 30, 10, 10),  # runs off the right and bottom edges
             _object(10 * i + 5, i, 1, "player", 20, 20, 0.5, 10),  # degenerate: under a pixel wide
         ]
-    annotations.append({"id": "pitch1", "image_id": "999000001", "supercategory": "pitch", "category_id": 5, "lines": {}})
+    annotations.append(
+        {"id": "pitch1", "image_id": "999000001", "supercategory": "pitch", "category_id": 5, "lines": {}}
+    )
     labels = {
         "info": {"name": "SNGS-999", "im_dir": "img1", "frame_rate": 25, "seq_length": 6},
         "images": images,

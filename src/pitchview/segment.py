@@ -144,11 +144,14 @@ class GroundTruthTracks:
                 x0, y0 = max(0, int(b.x)), max(0, int(b.y))
                 x1, y1 = min(frame.width, int(b.x + b.w)), min(frame.height, int(b.y + b.h))
                 masks[i, y0:y1, x0:x1] = True
-            yield frame.index, {
-                "out_obj_ids": np.array([b.track_id for b in people], dtype=np.int64),
-                "out_probs": np.ones(len(people), dtype=np.float32),
-                "out_binary_masks": masks,
-            }
+            yield (
+                frame.index,
+                {
+                    "out_obj_ids": np.array([b.track_id for b in people], dtype=np.int64),
+                    "out_probs": np.ones(len(people), dtype=np.float32),
+                    "out_binary_masks": masks,
+                },
+            )
 
 
 class MaskWriter:

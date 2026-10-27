@@ -49,7 +49,9 @@ def convert(coco_root: Path, out: Path, splits: tuple[str, ...] = ("train", "val
             (out / "labels" / split / name).with_suffix(".txt").write_text("".join(f"{r}\n" for r in rows))
     yaml = out / "data.yaml"
     names = "\n".join(f"  {i}: {n}" for i, n in enumerate(YOLO_CLASSES))
-    yaml.write_text(f"path: {out.resolve().as_posix()}\ntrain: images/train\nval: images/valid\ntest: images/test\nnames:\n{names}\n")
+    yaml.write_text(
+        f"path: {out.resolve().as_posix()}\ntrain: images/train\nval: images/valid\ntest: images/test\nnames:\n{names}\n"
+    )
     return yaml
 
 
