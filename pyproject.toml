@@ -3,6 +3,9 @@ name = "pitchview"
 version = "0.1.0"
 description = "Soccer game-state reconstruction from broadcast video (RF-DETR, SAM 3.1, ByteTrack, pitch calibration, jersey numbers), evaluated on SoccerNet GSR"
 readme = "README.md"
+license = "AGPL-3.0-only"  # matches Ultralytics (pitch model, YOLO26)
+license-files = ["LICENSE"]
+authors = [{ name = "Nathan Kyryk" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     # Data and utilities
