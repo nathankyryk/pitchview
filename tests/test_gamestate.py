@@ -5,6 +5,7 @@ from pitchview.gamestate import (
     Variant,
     assemble,
     ball_positions,
+    link_handoffs,
     merge_by_jersey,
     split_by_jersey,
     to_predictions,
@@ -273,3 +274,44 @@ def test_merge_by_jersey_spans_count_frames_without_a_number():
         + [{"frame": f, "track_id": 2, "team": "left", "jersey": None if f < 6 else "10"} for f in range(1, 11)]
     )
     assert set(merge_by_jersey(state)["track_id"]) == {1, 2}  # overlapping: two players, not one
+
+
+def _track(track, frames, x, team="right", jersey=None, role="player"):
+    return [{"frame": f, "track_id": track, "role": role, "team": team, "jersey": jersey,
+             "x1": x, "y1": 100.0, "x2": x + 40, "y2": 200.0} for f in frames]  # fmt: skip
+
+
+def test_link_handoffs_joins_a_new_track_that_starts_where_an_old_one_let_go():
+    state = pd.DataFrame(
+        _track(0, range(1, 13), 100)  # lets go of the player at frame 10 and drifts (frames 10-12)
+        + _track(38, range(10, 30), 102, jersey="25")  # SAM's new track on the same player
+        + _track(5, range(1, 30), 400, jersey="9")  # someone else
+    )
+    out = link_handoffs(state)
+    player = out[out["track_id"] == 0]
+    assert set(out["track_id"]) == {0, 5}
+    assert player["frame"].tolist() == list(range(1, 30))  # the drift is dropped: one row a frame
+    assert set(player["jersey"]) == {"25"}  # the number now shows from frame 1
+
+
+def test_link_handoffs_needs_one_team_close_boxes_a_short_gap_and_no_second_number():
+    def ids(*tracks):
+        return set(link_handoffs(pd.DataFrame([row for t in tracks for row in t]))["track_id"])
+
+    assert ids(_track(0, range(1, 10), 100), _track(1, range(10, 20), 100)) == {0}  # joined
+    assert ids(_track(0, range(1, 10), 100), _track(1, range(10, 20), 100, team="left")) == {0, 1}
+    assert ids(_track(0, range(1, 10), 100), _track(1, range(10, 20), 300)) == {0, 1}  # far apart
+    assert ids(_track(0, range(1, 10), 100), _track(1, range(25, 30), 100)) == {0, 1}  # 16 frames later
+    assert ids(_track(0, range(1, 30), 100), _track(1, range(10, 20), 100)) == {0, 1}  # both on: two players
+    assert ids(_track(0, range(1, 10), 100, jersey="14"), _track(1, range(10, 20), 100, jersey="25")) == {0, 1}
+    assert ids(_track(0, range(1, 10), 100), _track(1, range(10, 20), 100, role="referee")) == {0, 1}
+
+
+def test_link_handoffs_chains_keep_one_number():
+    state = pd.DataFrame(
+        _track(0, range(1, 10), 100, jersey="25")
+        + _track(1, range(10, 20), 100)
+        + _track(2, range(20, 30), 110, jersey="14")  # would put two numbers on one chain: not joined
+    )
+    out = link_handoffs(state)
+    assert out.groupby("track_id")["jersey"].agg(set).to_dict() == {0: {"25"}, 2: {"14"}}

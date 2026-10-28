@@ -157,21 +157,30 @@ def score_card(manifest: dict, clip: str, tab: str) -> str:
 
 
 def stats_card(manifest: dict, clip: str) -> str:
-    st = manifest["clips"][clip].get("stats") or {}
-    lines = ["### Match stats"]
+    """The clip's stats, labelled as the clip's: a GSR clip is 30 seconds of one match."""
+    entry = manifest["clips"][clip]
+    st = entry.get("stats") or {}
+    names = {**TEAM_NAMES, **(entry.get("teams") or {})}
+    seconds = entry.get("seconds")
+    span = f"this clip's {seconds:.0f} seconds" if seconds else "this clip"
+    lines = ["### Stats for this clip", f"From {span} only, not the whole match, and only the players in view."]
     if share := st.get("possession_pct"):
-        lines.append("Possession: " + ", ".join(f"{TEAM_NAMES.get(t, t)} {p:.0f}%" for t, p in share.items()))
+        teams = ", ".join(f"{names.get(t, t)} {p:.0f}%" for t, p in share.items())
+        lines.append(f"**Possession:** {teams} (share of the clip each team had the player nearest the ball)")
     if fast := st.get("fastest"):
-        who = f"#{fast['jersey']}" if fast.get("jersey") else "a player"
-        lines.append(f"Fastest: {who} ({TEAM_NAMES.get(fast.get('team'), 'unknown team').lower()}), "
-                     f"{fast['top_speed_kmh']:.1f} km/h")  # fmt: skip
+        team = names.get(fast.get("team"), "unknown team")
+        number = f"#{fast['jersey']}" if fast.get("jersey") else ""
+        if fast.get("name"):
+            who = f"{fast['name']} ({number}, {team})" if number else f"{fast['name']} ({team})"
+        else:
+            who = f"{number or 'a player'} ({team})"
+        lines.append(f"**Fastest player:** {who}, {fast['top_speed_kmh']:.1f} km/h")
     if "median_top_speed_kmh" in st:
-        lines.append(f"Median top speed: {st['median_top_speed_kmh']:.1f} km/h")
-    for team, shape in (st.get("shape") or {}).items():
-        lines.append(
-            f"{TEAM_NAMES.get(team, team)} shape: {shape['width_m']:.0f} m wide, {shape['depth_m']:.0f} m deep"
-        )
-    lines.append("Positions are the players in view, so team shape covers only what the camera shows.")
+        lines.append(f"**Median top speed:** {st['median_top_speed_kmh']:.1f} km/h (players tracked for 5 s or more)")
+    shapes = [f"{names.get(t, t)} {s['width_m']:.0f} m wide, {s['depth_m']:.0f} m deep"
+              for t, s in (st.get("shape") or {}).items()]  # fmt: skip
+    if shapes:
+        lines.append("**Average team shape:** " + "; ".join(shapes) + " (players in view)")
     return "\n\n".join(lines)
 
 

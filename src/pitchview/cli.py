@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -584,7 +585,7 @@ def assemble(
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
     sam_box_gap: int = 3, split_by_jersey: bool = True, unique_numbers: bool = True,
-    episode_gap: int = 5, jersey_reader: str = JERSEY_READER,
+    episode_gap: int = 5, jersey_reader: str = JERSEY_READER, link_handoffs: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -595,7 +596,9 @@ def assemble(
     --split-by-jersey splits a track where its jersey reads switch number (the tracker jumped
     to another player), from the saved reads. --unique-numbers lets only one player per team
     show a number in a frame; with --episode-gap G, clash frames up to G apart form one clash, won
-    throughout by the track that wins most of its frames (5, chosen on valid; -1: each frame on its own)."""
+    throughout by the track that wins most of its frames (5, chosen on valid; -1: each frame on its own).
+    --link-handoffs (with --tracker sam) joins a track that lets go of a player to the track SAM 3.1
+    starts on them a moment later (gamestate.link_handoffs)."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions, unplaced
     from pitchview.gamestate import assemble as build
@@ -605,7 +608,8 @@ def assemble(
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
                 merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey,
-                unique_numbers=unique_numbers, episode_gap=None if episode_gap < 0 else episode_gap)  # fmt: skip
+                unique_numbers=unique_numbers, episode_gap=None if episode_gap < 0 else episode_gap,
+                link_handoffs=link_handoffs)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
@@ -1067,7 +1071,18 @@ def bundle(clips: list[str], run: str = "sam", box_run: str = "main", split: str
                 },
             },
             "stats": summarise(pd.read_parquet(state_path), ball, clip.fps),
+            "seconds": round(len(clip.frames) / clip.fps, 1),
         }
+        # team names from the roster's kit lines ("red (FC Thun)"); the fastest player's name from its sheet
+        sheet_path = Path("rosters") / f"{clip.name}.json"
+        sheet = json.loads(sheet_path.read_text(encoding="utf-8")) if sheet_path.is_file() else {}
+        kits = sheet.get("kits") or {}
+        teams = {side: m.group(1) for side, kit in kits.items() if (m := re.search(r"\(([^)]+)\)", kit))}
+        if teams:
+            manifest["clips"][clip.name]["teams"] = teams
+        fast = manifest["clips"][clip.name]["stats"].get("fastest")
+        if fast and fast.get("jersey") and (name := sheet.get(fast.get("team"), {}).get(str(fast["jersey"]))):
+            fast["name"] = name
     (out / "manifest.json").write_text(json.dumps(_no_nan(manifest), indent=1, default=str))
     typer.echo(f"wrote {out / 'manifest.json'}. Next: pitchview viewer --bundle {out}")
 

@@ -50,6 +50,10 @@ class Variant:
     # Valid x5, SAM tracks: GS-HOTA 36.7 -> 36.9 with 1, 5 or 25; right-number player frames
     # 52.2% -> 52.8% (1, 5) / 52.7% (25); 1000 (one winner per clip) 52.1%. ByteTrack: 36.5 -> 36.4.
     episode_gap: int | None = 5
+    # SAM tracks only: join a track that lets go of a player to the new track SAM 3.1 starts on them
+    # a moment later (link_handoffs); the earlier piece takes the later one's number. Valid x5: GS-HOTA
+    # 44.3 either way, IDF1 63.9 -> 64.0, ID switches 277 -> 275, right-number player frames 70.4% -> 70.5%.
+    link_handoffs: bool = True
 
 
 def _near(frames: np.ndarray, anchors: np.ndarray, gap: int) -> np.ndarray:
@@ -185,6 +189,73 @@ def split_by_jersey(state: pd.DataFrame, pieces: dict[int, list[tuple[int, str |
     return out
 
 
+def link_handoffs(state: pd.DataFrame, max_gap: int = 10, min_iou: float = 0.5, max_overlap: int = 5) -> pd.DataFrame:
+    """Join SAM 3.1 hand-offs: in a tackle or an occlusion SAM can let go of a player and start a new
+    track on them a moment later, while the old track drifts off (and sam_box_gap drops it). Player
+    track A hands off to B when both are on one team, B starts after A, A ends no later than
+    `max_overlap` frames into B, B starts at most `max_gap` frames after A's last frame before it, and
+    that box of A overlaps B's first box by IoU >= `min_iou`. Each track has at most one successor and
+    one predecessor (largest overlap first), and a link that would join two numbers is skipped. A chain
+    takes its earliest track's id and its number; A's frames from B's start on (the drift) are dropped.
+    Chosen on valid x5 (gap 10, IoU 0.5: 2 links, both one labelled player; IoU 0.3 also joined two
+    players). Test, held out: 13 links, all one player; 6 pass a number on."""
+    players = state[(state["role"] == "player") & state["team"].notna()].sort_values("frame")
+    if players.empty:
+        return state
+    frames, boxes, team, number = {}, {}, {}, {}
+    for track, rows in players.groupby("track_id"):
+        frames[track] = rows["frame"].to_numpy()
+        boxes[track] = rows[BOX].to_numpy(float)
+        team[track] = rows["team"].iloc[0]
+        number[track] = next((j for j in rows["jersey"] if isinstance(j, str) and j), None)
+    start = {t: f[0] for t, f in frames.items()}
+    candidates = []
+    for b in frames:
+        for a, seen in frames.items():
+            if a == b or team[a] != team[b] or start[a] >= start[b] or seen[-1] > start[b] + max_overlap:
+                continue
+            i = np.searchsorted(seen, start[b]) - 1  # A's last frame before B starts
+            if i < 0 or start[b] - seen[i] > max_gap:
+                continue
+            iou = box_iou(boxes[a][i : i + 1], boxes[b][:1])[0, 0]
+            if iou >= min_iou:
+                candidates.append((iou, a, b))
+    root = {t: t for t in frames}
+
+    def find(t):
+        while root[t] != t:
+            t = root[t]
+        return t
+
+    succ, pred, chain_number = set(), set(), dict(number)
+    for _, a, b in sorted(candidates, key=lambda c: -c[0]):
+        ra, rb = find(a), find(b)
+        if a in succ or b in pred or ra == rb:
+            continue
+        na, nb = chain_number[ra], chain_number[rb]
+        if na is not None and nb is not None and na != nb:
+            continue
+        succ.add(a)
+        pred.add(b)
+        root[rb] = ra
+        chain_number[ra] = na if na is not None else nb
+        drift = ((state["track_id"] == a) & (state["frame"] >= start[b])).to_numpy()
+        state = state[~drift]
+    chains: dict[int, list] = {}
+    for t in frames:
+        chains.setdefault(find(t), []).append(t)
+    out = state.copy()
+    for r, members in chains.items():
+        if len(members) < 2:
+            continue
+        first = min(members, key=lambda t: (start[t], t))
+        rows = out["track_id"].isin(members)
+        if chain_number[r] is not None:
+            out.loc[rows & out["track_id"].map(lambda t: number.get(t) is None), "jersey"] = chain_number[r]
+        out.loc[rows, "track_id"] = first
+    return out
+
+
 def unique_numbers(state: pd.DataFrame, evidence: dict, episode_gap: int | None = None) -> pd.DataFrame:
     """A number belongs to one player per team at a time. Where tracks of one team claim the same
     number in a frame, the track with a sure read of it nearest in time keeps it (more reads break a
@@ -262,6 +333,8 @@ def assemble(
     if v.jersey and v.split_by_jersey and pieces:
         out = split_by_jersey(out, pieces)
     out.loc[out["role"] != "player", "jersey"] = None
+    if v.tracker == "sam" and v.link_handoffs:
+        out = link_handoffs(out)
     if v.jersey and v.unique_numbers and evidence is not None:
         out = unique_numbers(out, evidence, v.episode_gap)
     score = out["score"] if "score" in out else out.get("prob", 1.0)

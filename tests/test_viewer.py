@@ -7,10 +7,12 @@ MANIFEST = {
     "clips": {
         "SNGS-118": {
             "game": "7",
+            "seconds": 30.0,
+            "teams": {"left": "FC St. Gallen", "right": "FC Thun"},
             "scores": {"full": {"gs_hota": 66.24, "baseline": 53.64}},
             "stats": {
                 "possession_pct": {"left": 61.2, "right": 38.8},
-                "fastest": {"team": "right", "jersey": "10", "top_speed_kmh": 27.34},
+                "fastest": {"team": "right", "jersey": "10", "top_speed_kmh": 27.34, "name": "B. Stillhart"},
                 "median_top_speed_kmh": 19.0,
                 "shape": {"left": {"width_m": 40.2, "depth_m": 30.1, "line_height_m": 20.0}},
             },
@@ -29,8 +31,11 @@ def test_cards_show_the_clip_scores_and_stats():
     assert "Official baseline: 53.6" in score_card(MANIFEST, "SNGS-118", "full")
     assert score_card(MANIFEST, "SNGS-121", "full") == ""  # no scores: no card
     stats = stats_card(MANIFEST, "SNGS-118")
-    assert "Left team 61%" in stats and "#10 (right team), 27.3 km/h" in stats and "40 m wide" in stats
-    assert "a player (unknown team)" in stats_card(MANIFEST, "SNGS-121")
+    assert "### Stats for this clip" in stats and "this clip's 30 seconds only, not the whole match" in stats
+    assert "FC St. Gallen 61%" in stats and "B. Stillhart (#10, FC Thun), 27.3 km/h" in stats
+    assert "FC St. Gallen 40 m wide" in stats
+    other = stats_card(MANIFEST, "SNGS-121")
+    assert "a player (unknown team)" in other and "From this clip only" in other
     assert clip_label(MANIFEST, "SNGS-118") == "SNGS-118 (game 7)"
 
 
