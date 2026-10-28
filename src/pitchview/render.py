@@ -46,23 +46,32 @@ def short_name(full: str) -> str:
 
 
 def load_roster(path: Path) -> dict[str, dict[str, str]]:
-    """{"left": {"10": "Full Name"}, "right": {...}} from rosters/<clip>.json; {} if there is none."""
+    """{"left": {"10": "Full Name"}, "right": {...}} from rosters/<clip>.json (the team sheet); {} if
+    there is none. A number with a blank name is on the sheet, its name not filled in yet."""
     if not path.is_file():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    return {side: {str(k): v for k, v in data.get(side, {}).items() if v} for side in ("left", "right")}
+    return {side: {str(k): v or "" for k, v in data.get(side, {}).items()} for side in ("left", "right")}
 
 
-def tag_text(role: str, team: str | None, number: str | None, revealed: bool, roster: dict) -> str | None:
-    """What the nametag says. Referees get none; goalkeepers are unnumbered in GSR."""
+def tag_text(role: str, team: str | None, number: str | None, revealed: bool, roster: dict,
+             sheet_only: bool = True) -> str | None:  # fmt: skip
+    """What the nametag says. Referees get none; goalkeepers are unnumbered in GSR. With sheet_only,
+    a number that is not on the team's sheet (when there is one) is a misread, so it shows as "#?"
+    (the ground-truth tab turns this off, to show the labels as they are)."""
     if role == "referee":
         return None
     if role == "goalkeeper":
         return "GK"
     if number is None or not revealed:
         return "#?"
-    name = roster.get(team or "", {}).get(str(number))
-    return short_name(name) if name else f"#{number}"
+    sheet = roster.get(team or "", {})
+    name = sheet.get(str(number))
+    if name:
+        return short_name(name)
+    if sheet_only and sheet and str(number) not in sheet:
+        return "#?"
+    return f"#{number}"
 
 
 def track_colour(role: str, track_id: int) -> tuple[int, int, int]:
@@ -286,6 +295,7 @@ def render_clip(
     title: str = "",
     max_frames: int | None = None,
     style: str = "full",
+    sheet_only: bool = True,
 ) -> int:
     """Write the annotated clip as H.264 MP4. Returns the number of frames written.
     style "full": team colours, nametags and the radar; "tracks": perception only (see the module notes)."""
@@ -338,7 +348,7 @@ def render_clip(
                 if tracks_only:
                     text = None if r.role == "ball" else f"id {int(r.track_id)}"
                 else:
-                    text = tag_text(r.role, r.team, number, revealed, roster)
+                    text = tag_text(r.role, r.team, number, revealed, roster, sheet_only)
                 if text:
                     tags.append((r.ax, r.ay, colour, text))
                 people.append((r.x_m, r.y_m, colour, number if revealed else None))

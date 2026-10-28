@@ -671,7 +671,8 @@ def _render_tab(clip, split: str, tab: str, dets: str, max_frames: int | None, p
     else:
         raise typer.Exit(f"unknown tab {tab}: full, truth, specialist or foundation")
     n = render_clip(clip.frames, state, masks, ball, roster, {}, path, clip.fps, backfill=True,
-                    title=f"{TAB_TITLES[tab]}  |  {clip.name}", max_frames=max_frames, style=style)  # fmt: skip
+                    title=f"{TAB_TITLES[tab]}  |  {clip.name}", max_frames=max_frames, style=style,
+                    sheet_only=False)  # fmt: skip
     typer.echo(f"  {clip.name}: {n} frames -> {path}")
 
 

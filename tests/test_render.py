@@ -29,10 +29,12 @@ def test_roster_lookup_and_tag_text(tmp_path):
         json.dumps({"match": "x", "left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}})
     )
     roster = load_roster(path)
-    assert roster == {"left": {"10": "Lionel Messi"}, "right": {"9": "Erling Haaland"}}  # blank names dropped
+    assert roster == {"left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}}
     assert tag_text("player", "left", "10", True, roster) == "L. Messi"
-    assert tag_text("player", "left", "7", True, roster) == "#7"  # no name filled in yet
-    assert tag_text("player", "right", "10", True, roster) == "#10"  # 10 is on the other side's sheet
+    assert tag_text("player", "left", "7", True, roster) == "#7"  # on the sheet, no name filled in yet
+    assert tag_text("player", "right", "10", True, roster) == "#?"  # not on this side's sheet: a misread
+    assert tag_text("player", "right", "10", True, roster, sheet_only=False) == "#10"  # the labels, as they are
+    assert tag_text("player", "right", "10", True, {}) == "#10"  # no sheet: show what was read
     assert tag_text("player", "left", "10", False, roster) == "#?"  # not read yet
     assert tag_text("player", "left", None, True, roster) == "#?"
     assert tag_text("goalkeeper", "left", None, True, roster) == "GK"
