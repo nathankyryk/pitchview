@@ -121,8 +121,8 @@ def jersey_case(clips: list, tracks: dict[str, pd.DataFrame], numbers: dict[str,
             crops.append((frame, shirt_region((row.x1, row.y1, row.x2, row.y2))))
     return Case("jersey", clip.name, [f for f, _ in crops],
                 f"{clip.name}: a player wearing {true} was read as {number}. {len(wrong)} of the track's {total} "
-                f"reads was confident enough to vote, and it was wrong, so {frames_seen} frames carry the wrong "
-                "number. The shirt crop behind the misread:",
+                f"reads said {number} with enough confidence to vote, and {number} won the vote, so {frames_seen} "
+                "frames carry the wrong number. The shirt crop behind the misread:",
                 {"crops": crops, "read": number, "true": true})  # fmt: skip
 
 
