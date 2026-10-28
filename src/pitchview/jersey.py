@@ -54,13 +54,16 @@ def parse_number(text: str) -> str | None:
 
 
 class JerseyReader:
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, weights=None):
+        """weights: a state dict saved by jersey_train.finetune (None: zero-shot PARSeq)."""
         import torch
         from torchvision import transforms as T
 
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = torch.hub.load(PARSEQ_REPO, "parseq", pretrained=True, trust_repo=True).eval().to(self.device)
+        if weights is not None:
+            self.model.load_state_dict(torch.load(weights, map_location=self.device))
         # Squash to the model's input: letterboxing keeps the shape but makes digits too small to read.
         self.transform = T.Compose(
             [T.Resize(INPUT_SIZE[::-1], T.InterpolationMode.BICUBIC), T.ToTensor(), T.Normalize(0.5, 0.5)]

@@ -8,6 +8,7 @@
 #   bash scripts/run_gpu_jobs.sh sam     # unattended, on a 48 GB+ card: SAM 3.1 masks and tracks
 #   bash scripts/run_gpu_jobs.sh retrain # unattended, ~3 h on a 24 GB+ card: detector v2, its detections, speed table
 #   bash scripts/run_gpu_jobs.sh yolo    # unattended, ~2 h on a 24 GB+ card: YOLO26 on the same data, its detections, speed
+#   bash scripts/run_gpu_jobs.sh jersey  # unattended, ~45 min on any card: fine-tune PARSeq two ways, read valid + test
 #
 # Every stage but check re-launches themselves inside tmux, so a dropped SSH connection can't kill
 # them, and they stop the pod when they end (succeeded or not), so a finished or crashed
@@ -21,13 +22,15 @@
 #   retrain only: DETECTOR_NAME=v2 DETECTOR_LR=5e-5 DETECTOR_LR_ENCODER=7.5e-5 DETECTOR_SCHEDULE=cosine
 #     DETECTOR_WARMUP=1 DETECTOR_MIN_FACTOR=0.05 DETECTOR_PATIENCE=10, and DETECTOR_RES=1280
 #   yolo only: YOLO_NAME=yolo26 YOLO_MODEL=yolo26m.pt YOLO_IMGSZ=1280 YOLO_EPOCHS=12 YOLO_BATCH=8
+#   jersey only: JERSEY_EPOCHS=4, and HOLD_MINUTES=45: after the steps the pod waits this long for
+#     $LOG_DIR/<stage>_copied (touch it once the outputs are copied home) before it stops itself
 
 set -euo pipefail
 
 stage="${1:-}"
 case "$stage" in
-  check | train | infer | sam | all | retrain | yolo) ;;
-  *) echo "usage: $0 check|train|infer|sam|all|retrain|yolo" >&2; exit 2 ;;
+  check | train | infer | sam | all | retrain | yolo | jersey) ;;
+  *) echo "usage: $0 check|train|infer|sam|all|retrain|yolo|jersey" >&2; exit 2 ;;
 esac
 
 # shellcheck source=scripts/pod_env.sh
@@ -67,6 +70,8 @@ YOLO_MODEL="${YOLO_MODEL:-yolo26m.pt}"
 YOLO_IMGSZ="${YOLO_IMGSZ:-1280}"
 YOLO_EPOCHS="${YOLO_EPOCHS:-12}"
 YOLO_BATCH="${YOLO_BATCH:-8}"
+JERSEY_EPOCHS="${JERSEY_EPOCHS:-4}"
+HOLD_MINUTES="${HOLD_MINUTES:-0}"
 
 # Long stages: re-launch inside tmux, passing the settings explicitly (a running tmux
 # server would otherwise hand the new session its own, older environment).
@@ -81,7 +86,8 @@ DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PI
 DETECTOR_NAME=$DETECTOR_NAME DETECTOR_LR=$DETECTOR_LR DETECTOR_LR_ENCODER=$DETECTOR_LR_ENCODER \
 DETECTOR_SCHEDULE=$DETECTOR_SCHEDULE DETECTOR_WARMUP=$DETECTOR_WARMUP DETECTOR_MIN_FACTOR=$DETECTOR_MIN_FACTOR \
 DETECTOR_PATIENCE=$DETECTOR_PATIENCE YOLO_NAME=$YOLO_NAME YOLO_MODEL=$YOLO_MODEL YOLO_IMGSZ=$YOLO_IMGSZ \
-YOLO_EPOCHS=$YOLO_EPOCHS YOLO_BATCH=$YOLO_BATCH bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
+YOLO_EPOCHS=$YOLO_EPOCHS YOLO_BATCH=$YOLO_BATCH JERSEY_EPOCHS=$JERSEY_EPOCHS HOLD_MINUTES=$HOLD_MINUTES \
+bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
   echo "Started '$stage' in tmux. Watch it: tmux attach -t $stage   (leave it running: Ctrl-b then d)"
   echo "Status so far: cat $LOG_DIR/${stage}_status.txt"
   exit 0
@@ -121,6 +127,17 @@ finish() {
   cat "$STATUS"
   printf 'log: %s\n' "$LOG"
   [ "$stage" = check ] && return
+  if [ "$HOLD_MINUTES" -gt 0 ]; then
+    # Outputs live on this pod's disk; a stopped pod may not start again (its host's GPU taken),
+    # so wait for the laptop to copy them, then stop.
+    touch "$LOG_DIR/${stage}_done"
+    echo "Waiting up to $HOLD_MINUTES min for $LOG_DIR/${stage}_copied before stopping."
+    local waited=0
+    while [ ! -f "$LOG_DIR/${stage}_copied" ] && [ "$waited" -lt $((HOLD_MINUTES * 60)) ]; do
+      sleep 30
+      waited=$((waited + 30))
+    done
+  fi
   if [ "$NO_STOP" = 1 ]; then
     echo "NO_STOP=1: the pod keeps running (and billing)."
     return
@@ -201,6 +218,29 @@ yolo_steps() {
     --save "outputs/bench/bench_${gpu}_yolo.json"
 }
 
+# PARSeq fine-tuned on GSR train's shirt crops (jersey_train), two ways: only crops where zero-shot
+# PARSeq reads a digit of the number, and every crop. Each epoch's checkpoint and zero-shot PARSeq
+# then read all 58 valid clips (perfect boxes, every 9th frame) to pick one with jersey-score, and
+# the SAM 3.1 tracks of test and valid x5 (every 10th frame), so the pick needs no second pod.
+jersey_steps() {
+  run "train jersey reader: agree ($JERSEY_EPOCHS epochs)" uv run pitchview train-jersey --name gsr_agree --keep agree \
+    --epochs "$JERSEY_EPOCHS"
+  run "train jersey reader: all ($JERSEY_EPOCHS epochs)" uv run pitchview train-jersey --name gsr_all --keep all \
+    --epochs "$JERSEY_EPOCHS"
+  run "perfect boxes: valid" uv run pitchview detect --split valid --oracle
+  local readers=(zeroshot) reader e
+  for e in $(seq 1 "$JERSEY_EPOCHS"); do readers+=("gsr_agree_e$e" "gsr_all_e$e"); done
+  for reader in "${readers[@]}"; do
+    run "jerseys: valid x58, perfect boxes ($reader)" uv run pitchview jerseys --split valid --tracker bytetrack \
+      --dets oracle --stride 9 --reader "$reader"
+  done
+  for reader in "${readers[@]:1}"; do
+    run "jerseys: test, SAM tracks ($reader)" uv run pitchview jerseys --split test --tracker sam --reader "$reader"
+    run "jerseys: valid x5, SAM tracks ($reader)" uv run pitchview jerseys --split valid --limit 5 --tracker sam \
+      --reader "$reader"
+  done
+}
+
 # SAM 3.1 keeps every past frame in GPU memory (~27 MB a frame), so a 750-frame clip needs
 # ~40 GB: it runs as its own stage on a 48 GB+ card, alongside training on the 4090.
 sam_steps() {
@@ -247,6 +287,7 @@ case "$stage" in
   sam) sam_steps ;;
   retrain) retrain_steps ;;
   yolo) yolo_steps ;;
+  jersey) jersey_steps ;;
   all)
     train_steps
     # Pick up fixes pushed while training ran.

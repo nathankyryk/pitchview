@@ -169,6 +169,33 @@ def train_pitch(smoke: bool = False, epochs: int = 20, imgsz: int = 640, batch: 
     typer.echo(f"best weights: {best}")
 
 
+@app.command("train-jersey")
+def train_jersey(name: str = "gsr", keep: str = "agree", epochs: int = 5, stride: int = 5, min_height: float = 0,
+                 lr: float = 1e-4, batch_size: int = 256, workers: int = 8, smoke: bool = False) -> None:  # fmt: skip
+    """Fine-tune PARSeq on the train split's labelled shirt crops (jersey_train). Saves
+    weights/parseq_<name>_e<k>.pt after every epoch; read with `jerseys --reader <name>_e<k>`.
+    --keep agree: only crops where zero-shot PARSeq reads a digit of the number; all: every crop.
+    --min-height drops player boxes shorter than this, in pixels."""
+    from PIL import Image
+
+    from pitchview.jersey import JerseyReader
+    from pitchview.jersey_train import agrees, finetune, training_crops
+
+    if keep not in ("agree", "all"):
+        raise typer.BadParameter("--keep is agree or all")
+    clips = _clips("train", smoke, 2 if smoke else None)
+    crops, labels = training_crops(clips, stride, min_height, SMOKE_FRAMES * 2 if smoke else None, workers)
+    typer.echo(f"{len(labels)} labelled crops from {len(clips)} train clips (every {stride}th frame)")
+    if keep == "agree":
+        reads = JerseyReader().read([Image.fromarray(c.transpose(1, 2, 0)) for c in crops], batch_size=512)
+        mask = np.array([agrees(read, label) for (read, _), label in zip(reads, labels)], bool)
+        crops, labels = crops[mask], [label for label, m in zip(labels, mask) if m]
+        typer.echo(f"kept {len(labels)} crops where zero-shot PARSeq reads a digit of the number")
+    saved = finetune(crops, labels, WEIGHTS, name, epochs=1 if smoke else epochs, batch_size=8 if smoke else batch_size,
+                     lr=lr, device="cpu" if smoke else None, max_steps=2 if smoke else None, log=typer.echo)  # fmt: skip
+    typer.echo("saved: " + ", ".join(str(p) for p in saved))
+
+
 def _oracle_detections(clip, max_frames: int | None) -> pd.DataFrame:
     """GSR's labelled boxes as if a perfect detector produced them."""
     last = max_frames or len(clip.frames)
@@ -301,13 +328,26 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
 
 
 JERSEY_STRIDE = 10  # read every 10th frame
+JERSEY_READER = "zeroshot"  # PARSeq as published; a fine-tuned one is weights/parseq_<name>.pt
 
 
-def _jersey_dir(out: Path, kind: str, tracker: str, dets: str, stride: int, crops: str = "box") -> Path:
+def _jersey_dir(out: Path, kind: str, tracker: str, dets: str, stride: int, crops: str = "box",
+                reader: str = "zeroshot") -> Path:  # fmt: skip
     """Where `jerseys` saves raw reads (kind "jersey_reads") or voted numbers ("jerseys"). Every
-    setting but the first one used (every 10th frame, box crops) gets its own folder, for comparison."""
+    setting but the first one used (every 10th frame, box crops, zero-shot PARSeq) gets its own
+    folder, for comparison."""
     suffix = ("" if stride == 10 else f"_s{stride}") + ("" if crops == "box" else f"_{crops}")
+    suffix += "" if reader == "zeroshot" else f"_{reader}"
     return out / f"{kind}_{tracker}_{dets}{suffix}"
+
+
+def _reader_weights(reader: str) -> Path | None:
+    if reader == "zeroshot":
+        return None
+    path = WEIGHTS / f"parseq_{reader}.pt"
+    if not path.is_file():
+        raise typer.BadParameter(f"{path} not found (train it with `pitchview train-jersey`)")
+    return path
 
 
 @app.command("clean-masks")
@@ -355,12 +395,14 @@ def _masks(path: Path, frames: set[int]) -> dict[tuple[int, int], dict]:
 @app.command()
 def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack", dets: str = "model",
             stride: int = JERSEY_STRIDE, limit: int | None = None, min_conf: float = MIN_CONF,
-            allow_one: bool = False, merge_partial: bool = False, crops: str = "box") -> None:  # fmt: skip
+            allow_one: bool = False, merge_partial: bool = False, crops: str = "box",
+            reader: str = JERSEY_READER) -> None:  # fmt: skip
     """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s), then vote per track.
 
     Every raw read is saved (jersey_reads_*). A clip whose reads are saved is only re-voted, in
     seconds, so vote settings can change without reading again (tune them with jersey-score).
-    --crops mask (SAM tracks only) greys out everything in the shirt crop but the player's mask."""
+    --crops mask (SAM tracks only) greys out everything in the shirt crop but the player's mask.
+    --reader <name> reads with weights/parseq_<name>.pt (`train-jersey`); "zeroshot" is PARSeq as published."""
     from PIL import Image
     from pycocotools import mask as mask_utils
 
@@ -373,14 +415,17 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
     if smoke:
         stride = 2  # only 10 frames, and tracks are not confirmed on frame 1
     exclude = frozenset() if allow_one else NOT_PLAYER_NUMBERS
-    reader = None
+    weights = _reader_weights(reader)
+    model = None
     for clip in _clips(split, smoke, limit):
-        path = _jersey_dir(out, "jerseys", tracker, dets, stride, crops) / split / f"{clip.name}.json"
-        reads_path = _jersey_dir(out, "jersey_reads", tracker, dets, stride, crops) / split / f"{clip.name}.parquet"
+        path = _jersey_dir(out, "jerseys", tracker, dets, stride, crops, reader) / split / f"{clip.name}.json"
+        reads_path = (
+            _jersey_dir(out, "jersey_reads", tracker, dets, stride, crops, reader) / split / f"{clip.name}.parquet"
+        )
         if reads_path.exists():
             reads = load_reads(reads_path)
         else:
-            reader = reader or JerseyReader()
+            model = model or JerseyReader(weights=weights)
             tracks = _tracks(out, split, clip, tracker, dets)
             frames = {f.index: f for f in clip.frames}
             tracks = tracks[(tracks["frame"] - 1) % stride == 0]
@@ -393,7 +438,7 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
                 for tid, box in zip(rows["track_id"], rows[["x1", "y1", "x2", "y2"]].itertuples(index=False)):
                     rle = masks.get((int(frame), int(tid)))
                     shirts.append(shirt_crop(image, box, mask_utils.decode(rle).astype(bool) if rle else None))
-                for tid, (number, conf) in zip(rows["track_id"], reader.read(shirts)):
+                for tid, (number, conf) in zip(rows["track_id"], model.read(shirts)):
                     raw.append((int(tid), int(frame), number, conf))
             reads_path.parent.mkdir(parents=True, exist_ok=True)
             table = pd.DataFrame(raw, columns=["track_id", "frame", "number", "conf"])
@@ -481,7 +526,7 @@ def detector_score(split: str = "test", dets: str = "model", limit: int | None =
 def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "model", limit: int | None = None,
                  stride: int = JERSEY_STRIDE, every: int = 1, crops: str = "box", min_conf: float = MIN_CONF,
                  min_reads: int = 1, allow_one: bool = False, merge_partial: bool = False,
-                 grid: bool = False) -> None:  # fmt: skip
+                 grid: bool = False, reader: str = JERSEY_READER) -> None:  # fmt: skip
     """Score per-track jersey numbers against ground truth, re-voting from the saved raw reads.
     --grid tries a range of vote settings. Tune on valid, then report the chosen one on test.
     --every 3 keeps every 3rd read frame (with --stride 3: as if read every 9th frame)."""
@@ -490,7 +535,9 @@ def jersey_score(split: str = "valid", tracker: str = "bytetrack", dets: str = "
 
     clips = []
     for clip in _clips(split, False, limit):
-        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, stride, crops) / split / f"{clip.name}.parquet"
+        reads_path = (
+            _jersey_dir(OUT, "jersey_reads", tracker, dets, stride, crops, reader) / split / f"{clip.name}.parquet"
+        )
         if reads_path.exists():
             reads = load_reads(reads_path, every, stride)
             clips.append((reads, jersey_truth(_tracks(OUT, split, clip, tracker, dets), clip)))
@@ -535,7 +582,7 @@ def assemble(
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
     sam_box_gap: int = 3, split_by_jersey: bool = True, unique_numbers: bool = True,
-    episode_gap: int = 5,
+    episode_gap: int = 5, jersey_reader: str = JERSEY_READER,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -570,11 +617,11 @@ def assemble(
             Hs = frame_homographies(kp)
             if pitch_check:
                 Hs = checked_homographies(Hs, width=clip.frames[0].width, height=clip.frames[0].height)
-        jersey_dir = _jersey_dir(out, "jerseys", tracker, dets, jersey_stride, jersey_crops)
+        jersey_dir = _jersey_dir(out, "jerseys", tracker, dets, jersey_stride, jersey_crops, jersey_reader)
         jersey_path = jersey_dir / split / f"{clip.name}.json"
         numbers = {int(k): v for k, v in json.loads(jersey_path.read_text()).items()} if jersey_path.exists() else None
         reads_path = (
-            _jersey_dir(out, "jersey_reads", tracker, dets, jersey_stride, jersey_crops)
+            _jersey_dir(out, "jersey_reads", tracker, dets, jersey_stride, jersey_crops, jersey_reader)
             / split
             / f"{clip.name}.parquet"
         )
@@ -634,7 +681,8 @@ def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str
         ball = pd.read_parquet(ball_path) if ball_path.exists() else None
         mask_path = OUT / "sam_masks" / split / f"{clip.name}.jsonl"
         masks = _masks(mask_path, {f.index for f in clip.frames}) if mask_path.exists() else {}
-        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, JERSEY_STRIDE) / split / f"{clip.name}.parquet"
+        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, JERSEY_STRIDE, reader=JERSEY_READER)
+        reads_path = reads_path / split / f"{clip.name}.parquet"
         numbers = state.dropna(subset=["jersey"]).groupby("track_id")["jersey"].first().to_dict()
         first = first_reads(pd.read_parquet(reads_path), numbers, MIN_CONF) if reads_path.exists() else {}
         roster = load_roster(Path("rosters") / f"{clip.name}.json")
@@ -911,8 +959,10 @@ def failures(run: str = "main", split: str = "test", game: str = "11", out: Path
         if state_path.exists():
             states[clip.name] = pd.read_parquet(state_path)
         dets[clip.name] = _detections(OUT, split, clip, "model")
-        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, "model", JERSEY_STRIDE) / split / f"{clip.name}.parquet"
-        numbers_path = _jersey_dir(OUT, "jerseys", tracker, "model", JERSEY_STRIDE) / split / f"{clip.name}.json"
+        reads_path = _jersey_dir(OUT, "jersey_reads", tracker, "model", JERSEY_STRIDE, reader=JERSEY_READER)
+        reads_path = reads_path / split / f"{clip.name}.parquet"
+        numbers_path = _jersey_dir(OUT, "jerseys", tracker, "model", JERSEY_STRIDE, reader=JERSEY_READER)
+        numbers_path = numbers_path / split / f"{clip.name}.json"
         if reads_path.exists() and numbers_path.exists():
             reads[clip.name] = pd.read_parquet(reads_path)
             numbers[clip.name] = {int(k): v for k, v in json.loads(numbers_path.read_text()).items()}
