@@ -351,7 +351,8 @@ def render_clip(
                     text = tag_text(r.role, r.team, number, revealed, roster, sheet_only)
                 if text:
                     tags.append((r.ax, r.ay, colour, text))
-                people.append((r.x_m, r.y_m, colour, number if revealed else None))
+                shown = revealed and (tracks_only or text != "#?")  # the radar agrees with the tag
+                people.append((r.x_m, r.y_m, colour, number if shown else None))
         canvas = Image.fromarray(img)
         draw = ImageDraw.Draw(canvas)
         for ax, ay, colour, text in tags:
