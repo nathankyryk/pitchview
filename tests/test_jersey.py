@@ -8,6 +8,7 @@ from pitchview.jersey import (
     NOT_PLAYER_NUMBERS,
     load_reads,
     parse_number,
+    read_frames,
     shirt_crop,
     shirt_region,
     split_votes,
@@ -163,3 +164,10 @@ def test_split_votes_finds_a_second_jump():
     pattern = [(f, "8", 0.9) for f in (1, 11, 21)] + [(f, "20", 0.9) for f in (101, 111)]
     pattern += [(f, "5", 0.9) for f in (201, 211, 221)]
     assert split_votes(pd.DataFrame(_reads(1, pattern))) == {1: [(0, "8"), (62, "20"), (157, "5")]}
+
+
+def test_read_frames_keeps_sure_reads_per_track_and_number():
+    reads = pd.DataFrame(
+        _reads(5, [(30, "31", 0.9), (10, "31", 0.8), (20, "31", 0.5), (40, "1", 0.99), (50, None, 0.9)])
+    )
+    assert {k: v.tolist() for k, v in read_frames(reads).items()} == {(5, "31"): [10, 30]}

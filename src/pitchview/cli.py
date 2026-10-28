@@ -534,7 +534,7 @@ def assemble(
     team_crops: str = "mask", jersey: bool = True, smooth: int = 25, pitch: str = "finetuned", dets: str = "model",
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
-    sam_box_gap: int = 3, split_by_jersey: bool = True,
+    sam_box_gap: int = 3, split_by_jersey: bool = True, unique_numbers: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -543,16 +543,18 @@ def assemble(
     --sam-box-gap N (with --tracker sam) keeps SAM's people only within N frames of a detector box
     (3, chosen on valid); -1 keeps every frame SAM tracked.
     --split-by-jersey splits a track where its jersey reads switch number (the tracker jumped
-    to another player), from the saved reads."""
+    to another player), from the saved reads. --unique-numbers lets only one player per team
+    show a number in a frame."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
-    from pitchview.jersey import split_votes
+    from pitchview.jersey import read_frames, split_votes
     from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
 
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
-                merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey)  # fmt: skip
+                merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey,
+                unique_numbers=unique_numbers)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
@@ -574,8 +576,10 @@ def assemble(
             / split
             / f"{clip.name}.parquet"
         )
-        pieces = split_votes(reads_path) if split_by_jersey and reads_path.exists() else None
-        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v, pieces)
+        reads = pd.read_parquet(reads_path) if reads_path.exists() else None
+        pieces = split_votes(reads) if split_by_jersey and reads is not None else None
+        evidence = read_frames(reads) if unique_numbers and reads is not None else None
+        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v, pieces, evidence)
         state_path = out / "gamestate" / name / split / f"{clip.name}.parquet"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state.to_parquet(state_path)
@@ -926,7 +930,8 @@ def failures(run: str = "main", split: str = "test", game: str = "11", out: Path
     (out / "captions.md").write_text("\n".join(lines))
 
 
-EVAL_RESULTS = [OUT / "logs" / f"eval_test_{name}.json" for name in ("earlier", "final", "sam_boxes")]
+# later files win: Tuesday's final scores (clean masks, SAM system first) replace the earlier ones
+EVAL_RESULTS = [OUT / "logs" / f"eval_test_{name}.json" for name in ("earlier", "final", "sam_boxes", "masks")]
 
 
 def _no_nan(value):
@@ -1033,19 +1038,19 @@ def space(bundle_dir: Path = Path("demo_720"), out: Path = Path("space")) -> Non
 # README labels for the runs in the results table, in table order.
 RUN_LABELS = {
     "baseline": "Official baseline (sn-gamestate: PRTReID + StrongSORT), rescored",
-    "main": "**PitchView** (RF-DETR + ByteTrack, SAM 3.1 masks)",
-    "sam": "PitchView with SAM 3.1's own tracks",
-    "sam_allframes": "with SAM 3.1's tracks in every frame, not only near the detector's boxes",
-    "main_nomerge": "without track linking by jersey",
-    "main_s5": "without pitch checks or track linking, 5-frame smoothing",
-    "nojersey": "without jersey numbers",
-    "main_j3": "jersey reads every 3rd frame, not every 10th",
-    "boxfoot": "foot point from the box, not the mask",
-    "boxteam": "teams from box crops, not mask crops",
-    "offtheshelf": "off-the-shelf pitch model",
-    "oracle_pitch": "with perfect calibration",
-    "oracle_dets": "with perfect detection",
-    "oracle_dets_pitch": "with perfect detection and calibration",
+    "sam": "**PitchView** (SAM 3.1 masks and tracks, RF-DETR for roles)",
+    "main": "with RF-DETR + ByteTrack box tracks instead of SAM 3.1's",
+    "sam_allframes": "with SAM 3.1's people in every frame, not only near the detector's boxes",
+    "sam_nosplit": "without splitting a track where its jersey number changes",
+    "sam_nounique": "without the one-player-per-number rule",
+    "sam_nomerge": "without track linking by jersey",
+    "sam_nojersey": "without jersey numbers",
+    "sam_boxfoot": "foot point from the box, not the mask",
+    "sam_boxteam": "teams from box crops, not mask crops",
+    "sam_offtheshelf": "off-the-shelf pitch model",
+    "sam_oracle_pitch": "with perfect calibration",
+    "sam_oracle_dets": "with perfect detection",
+    "sam_oracle_dets_pitch": "with perfect detection and calibration",
 }
 
 

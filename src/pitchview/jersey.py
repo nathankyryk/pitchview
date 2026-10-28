@@ -190,6 +190,18 @@ def _pieces(frames, numbers, confs, start, min_conf, exclude, min_reads, depth) 
     )
 
 
+def read_frames(reads, min_conf: float = MIN_CONF, exclude: frozenset = NOT_PLAYER_NUMBERS) -> dict:
+    """{(track, number): sorted frames of the track's sure reads of that number}: the evidence behind
+    each label, for settling two players who claim the same number (gamestate.unique_numbers)."""
+    import pandas as pd
+
+    d = reads if isinstance(reads, pd.DataFrame) else pd.read_parquet(reads)
+    sure = d[d["number"].notna() & (d["conf"] >= min_conf) & ~d["number"].isin(list(exclude))]
+    return {
+        (int(t), str(n)): np.sort(g["frame"].to_numpy(dtype=int)) for (t, n), g in sure.groupby(["track_id", "number"])
+    }
+
+
 def load_reads(path, every: int = 1, stride: int = 1) -> list[tuple[int, str | None, float]]:
     """The raw reads `pitchview jerseys` saves (a path or the loaded table), as vote() input.
     every=3 keeps every 3rd read frame of a `stride` read: reads every 3rd frame then stand in

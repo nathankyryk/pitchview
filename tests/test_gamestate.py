@@ -1,7 +1,15 @@
 import numpy as np
 import pandas as pd
 
-from pitchview.gamestate import Variant, assemble, ball_positions, merge_by_jersey, split_by_jersey, to_predictions
+from pitchview.gamestate import (
+    Variant,
+    assemble,
+    ball_positions,
+    merge_by_jersey,
+    split_by_jersey,
+    to_predictions,
+    unique_numbers,
+)
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
 H = np.array([[0.1, 0, -50], [0, 0.1, -30], [0, 0, 1]], dtype=float)
@@ -196,3 +204,30 @@ def test_split_by_jersey_gives_each_piece_its_own_id_and_number():
     assert (out.loc[state["track_id"] == 7, ["track_id", "jersey"]] == [7, "9"]).all().all()
     rejoined = merge_by_jersey(five.assign(team="right"))  # the two #25 pieces are one player again
     assert rejoined["track_id"].tolist() == [5] * 3 + [8] * 4 + [5] * 3
+
+
+def test_unique_numbers_keeps_a_number_on_the_player_read_nearest_in_time():
+    def rows(track, frames, jersey="31", team="right", read_track=None):
+        return [{"frame": f, "track_id": track, "team": team, "jersey": jersey,
+                 "read_track": track if read_track is None else read_track} for f in frames]  # fmt: skip
+
+    state = pd.DataFrame(
+        rows(5, range(1, 11))  # read as 31 at frame 2
+        + rows(30, range(1, 11))  # read as 31 at frame 9
+        + rows(7, range(1, 11), team="left")  # the other team's 31: no clash
+        + rows(8, range(1, 11), jersey="9")  # another number: no clash
+    )
+    evidence = {(5, "31"): np.array([2]), (30, "31"): np.array([9]), (7, "31"): np.array([5])}
+    out = unique_numbers(state, evidence)
+    shows = out[out["jersey"] == "31"].groupby("frame")["track_id"].apply(set).to_dict()
+    assert all(shows[f] == ({5, 7} if f <= 5 else {30, 7}) for f in range(1, 11))  # f = 5.5 is the midpoint
+    assert out.loc[out["track_id"] == 8, "jersey"].eq("9").all()
+
+
+def test_merge_by_jersey_spans_count_frames_without_a_number():
+    # track 2 shows its number only from frame 6, but it exists from frame 1, alongside track 1
+    state = pd.DataFrame(
+        [{"frame": f, "track_id": 1, "team": "left", "jersey": "10"} for f in range(1, 5)]
+        + [{"frame": f, "track_id": 2, "team": "left", "jersey": None if f < 6 else "10"} for f in range(1, 11)]
+    )
+    assert set(merge_by_jersey(state)["track_id"]) == {1, 2}  # overlapping: two players, not one

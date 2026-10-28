@@ -41,6 +41,10 @@ class Variant:
     # tracker jumped to another player. Needs `pieces` in assemble(). Valid x5 GS-HOTA: SAM tracks
     # 36.3 -> 36.4, ByteTrack 36.5 -> 36.6 (8 and 4 tracks split): about even; it fixes the demo's names.
     split_by_jersey: bool = True
+    # One player per number per team per frame (unique_numbers). Needs `evidence` in assemble().
+    # Valid x5 GS-HOTA: SAM tracks 36.4 -> 36.7, ByteTrack 36.6 -> 36.5. 4-12% of numbered player
+    # frames had a second player with the same number (two nametags with one name in the demo).
+    unique_numbers: bool = True
 
 
 def _near(frames: np.ndarray, anchors: np.ndarray, gap: int) -> np.ndarray:
@@ -136,9 +140,9 @@ def merge_by_jersey(state: pd.DataFrame) -> pd.DataFrame:
     that never share a frame (a tracker often splits a player at an occlusion or a camera cut).
     Pieces are chained in time order; each joins the first chain that has ended before it starts."""
     keyed = state.dropna(subset=["team", "jersey"])
-    spans = keyed.groupby("track_id").agg(
-        team=("team", "first"), jersey=("jersey", "first"), start=("frame", "min"), end=("frame", "max")
-    )
+    # a track's span counts all its frames, also those where it shows no number (unique_numbers)
+    spans = keyed.groupby("track_id").agg(team=("team", "first"), jersey=("jersey", "first"))
+    spans = spans.join(state.groupby("track_id")["frame"].agg(start="min", end="max"))
     new_id: dict[int, int] = {}
     for _, group in spans.groupby(["team", "jersey"]):
         chains: list[list[int]] = []  # [first track id, last frame so far]
@@ -172,6 +176,33 @@ def split_by_jersey(state: pd.DataFrame, pieces: dict[int, list[tuple[int, str |
     return out
 
 
+def unique_numbers(state: pd.DataFrame, evidence: dict) -> pd.DataFrame:
+    """A number belongs to one player per team at a time. Where tracks of one team claim the same
+    number in a frame, the track with a sure read of it nearest in time keeps it (more reads break a
+    tie) and the others get no number there. evidence: jersey.read_frames(), keyed by the reader's
+    track ids, which the state carries in `read_track` (split_by_jersey gives pieces new ids)."""
+    keyed = state.dropna(subset=["team", "jersey"])
+    claims = keyed.groupby(["frame", "team", "jersey"])["track_id"].transform("nunique")
+    clash = keyed[claims > 1]
+    if clash.empty:
+        return state
+    dist = np.full(len(clash), np.inf)
+    reads = np.zeros(len(clash))
+    keys = list(zip(clash["read_track"].astype(int), clash["jersey"].astype(str)))
+    frames = clash["frame"].to_numpy()
+    for i, (key, frame) in enumerate(zip(keys, frames)):
+        seen = evidence.get(key)
+        if seen is not None and len(seen):
+            j = np.searchsorted(seen, frame)
+            near = seen[max(j - 1, 0) : j + 1]
+            dist[i], reads[i] = np.abs(near - frame).min(), len(seen)
+    ranked = clash.assign(_dist=dist, _reads=-reads).sort_values(["_dist", "_reads", "track_id"])
+    keep = ranked.groupby(["frame", "team", "jersey"]).head(1).index
+    out = state.copy()
+    out.loc[clash.index.difference(keep), "jersey"] = None
+    return out
+
+
 def assemble(
     dets: pd.DataFrame,
     sam: pd.DataFrame,
@@ -182,10 +213,12 @@ def assemble(
     fps: float = 25.0,
     v: Variant = Variant(),  # noqa: B008  (frozen dataclass, safe as a default)
     pieces: dict[int, list[tuple[int, str | None]]] | None = None,
+    evidence: dict | None = None,
 ) -> pd.DataFrame:
     """One row per person per frame: track_id, role, team, jersey, x_m, y_m, score, and for the
     video renderer the image box (x1, y1, x2, y2) and SAM's mask id (sam_obj_id, -1 if none).
-    pieces (jersey.split_votes) splits tracks whose number changes, with v.split_by_jersey."""
+    pieces (jersey.split_votes) splits tracks whose number changes, with v.split_by_jersey;
+    evidence (jersey.read_frames) settles shared numbers, with v.unique_numbers."""
     people = _to_metres(_people(dets, sam, n_frames, fps, v), homographies)
     if people.empty:
         return pd.DataFrame(columns=STATE_COLUMNS)
@@ -202,9 +235,12 @@ def assemble(
     out["team"] = out["track_id"].map(teams)
     out.loc[~out["role"].isin(["player", "goalkeeper"]), "team"] = None
     out["jersey"] = out["track_id"].map(jerseys or {}) if v.jersey else None
+    out["read_track"] = out["track_id"]
     if v.jersey and v.split_by_jersey and pieces:
         out = split_by_jersey(out, pieces)
     out.loc[out["role"] != "player", "jersey"] = None
+    if v.jersey and v.unique_numbers and evidence is not None:
+        out = unique_numbers(out, evidence)
     score = out["score"] if "score" in out else out.get("prob", 1.0)
     out = out.assign(score=score, sam_obj_id=out["sam_obj_id"].fillna(-1).astype(int))
     if v.merge_by_jersey:
