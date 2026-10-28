@@ -4,6 +4,10 @@
     "left": "white with green (FC St. Gallen)",
     "right": "red (FC Thun)"
   },
+  "goalkeeper": {
+    "left": "32",
+    "right": "1"
+  },
   "left": {
     "4": "M. Ashimeru",
     "8": "J. Quintilla",

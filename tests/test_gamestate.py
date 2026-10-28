@@ -224,6 +224,29 @@ def test_unique_numbers_keeps_a_number_on_the_player_read_nearest_in_time():
     assert out.loc[out["track_id"] == 8, "jersey"].eq("9").all()
 
 
+def test_unique_numbers_one_winner_per_clash():
+    # SNGS-145: the real #14 is read 14 time after time; another player is read as 14 once, at frame 9.
+    # Frame by frame, the stray read wins the frames nearest it (8-10) and the name jumps across;
+    # with episodes, whoever wins most of a clash keeps the number through all of it.
+    def rows(track, frames):
+        return [{"frame": f, "track_id": track, "team": "right", "jersey": "14", "read_track": track} for f in frames]
+
+    frames = [*range(1, 11), *range(30, 36)]  # two clashes, 20 frames apart
+    state = pd.DataFrame(rows(18, frames) + rows(19, frames))
+    evidence = {(18, "14"): np.array([1, 2, 3, 4, 5, 6]), (19, "14"): np.array([9, 33])}
+
+    def holder(out):
+        return out[out["jersey"] == "14"].set_index("frame")["track_id"].to_dict()
+
+    per_frame = holder(unique_numbers(state, evidence))
+    assert [per_frame[f] for f in range(1, 11)] == [18] * 7 + [19] * 3
+    steady = holder(unique_numbers(state, evidence, episode_gap=5))
+    assert [steady[f] for f in range(1, 11)] == [18] * 10  # 18 won 7 of the 10 frames
+    assert [steady[f] for f in range(30, 36)] == [19] * 6  # a separate clash, which 19 wins
+    joined = holder(unique_numbers(state, evidence, episode_gap=25))  # one clash: 18 won 7 of 16
+    assert set(joined.values()) == {19}
+
+
 def test_merge_by_jersey_spans_count_frames_without_a_number():
     # track 2 shows its number only from frame 6, but it exists from frame 1, alongside track 1
     state = pd.DataFrame(

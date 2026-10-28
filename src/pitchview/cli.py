@@ -535,6 +535,7 @@ def assemble(
     limit: int | None = None, pitch_check: bool = True, jersey_stride: int = JERSEY_STRIDE,
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
     sam_box_gap: int = 3, split_by_jersey: bool = True, unique_numbers: bool = True,
+    episode_gap: int = 5,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -544,7 +545,8 @@ def assemble(
     (3, chosen on valid); -1 keeps every frame SAM tracked.
     --split-by-jersey splits a track where its jersey reads switch number (the tracker jumped
     to another player), from the saved reads. --unique-numbers lets only one player per team
-    show a number in a frame."""
+    show a number in a frame; with --episode-gap G, clash frames up to G apart form one clash, won
+    throughout by the track that wins most of its frames (5, chosen on valid; -1: each frame on its own)."""
     from pitchview.evaluate import image_ids, write_predictions
     from pitchview.gamestate import Variant, ball_positions, to_predictions
     from pitchview.gamestate import assemble as build
@@ -554,7 +556,7 @@ def assemble(
     out = _out(smoke)
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
                 merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey,
-                unique_numbers=unique_numbers)  # fmt: skip
+                unique_numbers=unique_numbers, episode_gap=None if episode_gap < 0 else episode_gap)  # fmt: skip
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"

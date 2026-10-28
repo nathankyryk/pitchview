@@ -29,7 +29,7 @@ def test_roster_lookup_and_tag_text(tmp_path):
         json.dumps({"match": "x", "left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}})
     )
     roster = load_roster(path)
-    assert roster == {"left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}}
+    assert roster == {"left": {"10": "Lionel Messi", "7": ""}, "right": {"9": "Erling Haaland"}, "goalkeeper": {}}
     assert tag_text("player", "left", "10", True, roster) == "L. Messi"
     assert tag_text("player", "left", "7", True, roster) == "#7"  # on the sheet, no name filled in yet
     assert tag_text("player", "right", "10", True, roster) == "#?"  # not on this side's sheet: a misread
@@ -40,6 +40,18 @@ def test_roster_lookup_and_tag_text(tmp_path):
     assert tag_text("goalkeeper", "left", None, True, roster) == "GK"
     assert tag_text("referee", None, None, True, roster) is None
     assert load_roster(tmp_path / "missing.json") == {}
+
+
+def test_goalkeeper_tag_comes_from_the_sheet(tmp_path):
+    # GSR doesn't number goalkeepers; a team has one keeper on the pitch, so role and side name him
+    path = tmp_path / "SNGS-118.json"
+    path.write_text(json.dumps({"goalkeeper": {"left": "32", "right": 1},
+                                "left": {"32": "Dejan Stojanovic"}, "right": {"10": "B. Stillhart"}}))  # fmt: skip
+    roster = load_roster(path)
+    assert roster["goalkeeper"] == {"left": "32", "right": "1"}
+    assert tag_text("goalkeeper", "left", None, True, roster) == "D. Stojanovic"
+    assert tag_text("goalkeeper", "right", None, True, roster) == "#1"  # keeper's number, no name on the sheet
+    assert tag_text("goalkeeper", None, None, True, roster) == "GK"  # side unknown
 
 
 def test_first_reads_waits_for_the_voted_number():

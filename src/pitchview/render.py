@@ -46,23 +46,37 @@ def short_name(full: str) -> str:
 
 
 def load_roster(path: Path) -> dict[str, dict[str, str]]:
-    """{"left": {"10": "Full Name"}, "right": {...}} from rosters/<clip>.json (the team sheet); {} if
-    there is none. A number with a blank name is on the sheet, its name not filled in yet."""
+    """{"left": {"10": "Full Name"}, "right": {...}, "goalkeeper": {"left": "32", "right": "1"}} from
+    rosters/<clip>.json (the team sheet); {} if there is none. A number with a blank name is on the
+    sheet, its name not filled in yet. "goalkeeper" gives each side's keeper's number, if known."""
     if not path.is_file():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    return {side: {str(k): v or "" for k, v in data.get(side, {}).items()} for side in ("left", "right")}
+    roster = {side: {str(k): v or "" for k, v in data.get(side, {}).items()} for side in ("left", "right")}
+    roster["goalkeeper"] = {side: str(n) for side, n in (data.get("goalkeeper") or {}).items() if n is not None}
+    return roster
+
+
+def keeper_number(roster: dict, team: str | None) -> str | None:
+    """The team's goalkeeper's number from the sheet: GSR doesn't number goalkeepers, but a team
+    has one on the pitch, so role and side name him."""
+    return roster.get("goalkeeper", {}).get(team or "")
 
 
 def tag_text(role: str, team: str | None, number: str | None, revealed: bool, roster: dict,
              sheet_only: bool = True) -> str | None:  # fmt: skip
-    """What the nametag says. Referees get none; goalkeepers are unnumbered in GSR. With sheet_only,
-    a number that is not on the team's sheet (when there is one) is a misread, so it shows as "#?"
-    (the ground-truth tab turns this off, to show the labels as they are)."""
+    """What the nametag says. Referees get none. Goalkeepers are unnumbered in GSR, so a keeper's tag
+    comes from the sheet's goalkeeper for his side ("GK" without one). With sheet_only, a number that
+    is not on the team's sheet (when there is one) is a misread, so it shows as "#?" (the
+    ground-truth tab turns this off, to show the labels as they are)."""
     if role == "referee":
         return None
     if role == "goalkeeper":
-        return "GK"
+        keeper = keeper_number(roster, team)
+        if keeper is None:
+            return "GK"
+        name = roster.get(team or "", {}).get(keeper)
+        return short_name(name) if name else f"#{keeper}"
     if number is None or not revealed:
         return "#?"
     sheet = roster.get(team or "", {})
@@ -344,6 +358,8 @@ def render_clip(
                 else:
                     cv2.rectangle(img, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, 2)
                 number = r.jersey if isinstance(r.jersey, str) and r.jersey else None
+                if r.role == "goalkeeper" and not tracks_only:
+                    number = keeper_number(roster, r.team)
                 revealed = backfill or (int(r.track_id) in first_frame and f.index >= first_frame[int(r.track_id)])
                 if tracks_only:
                     text = None if r.role == "ball" else f"id {int(r.track_id)}"
@@ -355,6 +371,7 @@ def render_clip(
                 people.append((r.x_m, r.y_m, colour, number if shown else None))
         canvas = Image.fromarray(img)
         draw = ImageDraw.Draw(canvas)
+        tags.sort(key=lambda t: t[3] != "#?")  # names on top, so a "#?" never covers one
         for ax, ay, colour, text in tags:
             left, top, right, bottom = draw.textbbox((0, 0), text, font=tag_font)
             w, h = right - left + 14, bottom - top + 10

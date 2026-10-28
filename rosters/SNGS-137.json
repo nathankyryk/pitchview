@@ -4,6 +4,10 @@
     "left": "white with green (FC St. Gallen)",
     "right": "red/black stripes (Neuchatel Xamax)"
   },
+  "goalkeeper": {
+    "left": "32",
+    "right": "30"
+  },
   "left": {
     "4": "M. Ashimeru",
     "5": "L. Mosevich",

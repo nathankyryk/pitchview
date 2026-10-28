@@ -4,6 +4,10 @@
     "left": "red/black stripes (Neuchatel Xamax)",
     "right": "white with green (FC St. Gallen)"
   },
+  "goalkeeper": {
+    "left": "30",
+    "right": "32"
+  },
   "left": {
     "7": "T. Corbaz",
     "9": "A. Pululu",

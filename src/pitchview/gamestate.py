@@ -45,6 +45,11 @@ class Variant:
     # Valid x5 GS-HOTA: SAM tracks 36.4 -> 36.7, ByteTrack 36.6 -> 36.5. 4-12% of numbered player
     # frames had a second player with the same number (two nametags with one name in the demo).
     unique_numbers: bool = True
+    # unique_numbers: clash frames up to this many frames apart form one clash, with one winner
+    # throughout (None: each frame on its own, which let names jump between two players and back).
+    # Valid x5, SAM tracks: GS-HOTA 36.7 -> 36.9 with 1, 5 or 25; right-number player frames
+    # 52.2% -> 52.8% (1, 5) / 52.7% (25); 1000 (one winner per clip) 52.1%. ByteTrack: 36.5 -> 36.4.
+    episode_gap: int | None = 5
 
 
 def _near(frames: np.ndarray, anchors: np.ndarray, gap: int) -> np.ndarray:
@@ -176,11 +181,14 @@ def split_by_jersey(state: pd.DataFrame, pieces: dict[int, list[tuple[int, str |
     return out
 
 
-def unique_numbers(state: pd.DataFrame, evidence: dict) -> pd.DataFrame:
+def unique_numbers(state: pd.DataFrame, evidence: dict, episode_gap: int | None = None) -> pd.DataFrame:
     """A number belongs to one player per team at a time. Where tracks of one team claim the same
     number in a frame, the track with a sure read of it nearest in time keeps it (more reads break a
     tie) and the others get no number there. evidence: jersey.read_frames(), keyed by the reader's
-    track ids, which the state carries in `read_track` (split_by_jersey gives pieces new ids)."""
+    track ids, which the state carries in `read_track` (split_by_jersey gives pieces new ids).
+    episode_gap g: clash frames of one number at most g frames apart form one clash, and the track
+    that wins most of its frames keeps the number through all of them (where it is there), so the
+    name doesn't jump between two players and back. None decides each frame on its own."""
     keyed = state.dropna(subset=["team", "jersey"])
     claims = keyed.groupby(["frame", "team", "jersey"])["track_id"].transform("nunique")
     clash = keyed[claims > 1]
@@ -197,6 +205,17 @@ def unique_numbers(state: pd.DataFrame, evidence: dict) -> pd.DataFrame:
             near = seen[max(j - 1, 0) : j + 1]
             dist[i], reads[i] = np.abs(near - frame).min(), len(seen)
     ranked = clash.assign(_dist=dist, _reads=-reads).sort_values(["_dist", "_reads", "track_id"])
+    if episode_gap is not None:
+        won = ranked.groupby(["frame", "team", "jersey"]).head(1).sort_values(["team", "jersey", "frame"])
+        new = (won["team"] != won["team"].shift()) | (won["jersey"] != won["jersey"].shift())
+        episode = (new | (won["frame"].diff() > episode_gap)).cumsum()
+        winner = won.groupby(episode)["track_id"].agg(lambda t: t.value_counts().index[0])
+        key = pd.MultiIndex.from_frame(won[["frame", "team", "jersey"]])
+        episode_of = pd.Series(episode.to_numpy(), index=key)
+        rows = pd.MultiIndex.from_frame(ranked[["frame", "team", "jersey"]])
+        favourite = winner.reindex(episode_of.reindex(rows).to_numpy()).to_numpy()
+        ranked = ranked.assign(_lost=ranked["track_id"].to_numpy() != favourite)
+        ranked = ranked.sort_values(["_lost", "_dist", "_reads", "track_id"], kind="stable")
     keep = ranked.groupby(["frame", "team", "jersey"]).head(1).index
     out = state.copy()
     out.loc[clash.index.difference(keep), "jersey"] = None
@@ -240,7 +259,7 @@ def assemble(
         out = split_by_jersey(out, pieces)
     out.loc[out["role"] != "player", "jersey"] = None
     if v.jersey and v.unique_numbers and evidence is not None:
-        out = unique_numbers(out, evidence)
+        out = unique_numbers(out, evidence, v.episode_gap)
     score = out["score"] if "score" in out else out.get("prob", 1.0)
     out = out.assign(score=score, sam_obj_id=out["sam_obj_id"].fillna(-1).astype(int))
     if v.merge_by_jersey:
