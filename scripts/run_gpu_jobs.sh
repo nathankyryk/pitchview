@@ -174,6 +174,12 @@ train_steps() {
   run "train pitch model ($PITCH_EPOCHS epochs)" uv run pitchview train-pitch --epochs "$PITCH_EPOCHS"
 }
 
+# The default jersey reader (cli.JERSEY_READER, gsr_all_e1) is epoch 1 of this 4-epoch run, ~4 min.
+jersey_reader() {
+  [ -f weights/parseq_gsr_all_e1.pt ] && return
+  run "train jersey reader (default: gsr_all_e1)" uv run pitchview train-jersey --name gsr_all --keep all --epochs 4
+}
+
 infer_steps() {
   run "detect: test" uv run pitchview detect --split test --size "$DETECTOR_SIZE" --resolution "$DETECTOR_RES"
   # valid: only the 5 tuning clips, like keypoints and SAM
@@ -182,6 +188,7 @@ infer_steps() {
   run "keypoints: test (fine-tuned)" uv run pitchview keypoints --split test
   run "keypoints: test (off-the-shelf)" uv run pitchview keypoints --split test --tag offtheshelf
   run "keypoints: valid x5 (fine-tuned)" uv run pitchview keypoints --split valid --limit 5
+  jersey_reader
   run "jerseys: test, ByteTrack tracks" uv run pitchview jerseys --split test
 }
 
@@ -248,6 +255,7 @@ sam_steps() {
   # the viewer can then show and toggle each player's mask on any test clip.
   run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
   run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
+  jersey_reader
   run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
 }
 
@@ -267,7 +275,7 @@ case "$stage" in
     run "SAM 3.1: 1 clip" uv run pitchview sam --split valid --limit 1 --demo 1
     run "keypoints: 1 clip" uv run pitchview keypoints --split valid --limit 1 --tag offtheshelf
     run "pitch timing: 1 epoch" uv run pitchview train-pitch --epochs 1
-    run "jerseys: 1 clip" uv run pitchview jerseys --split valid --limit 1
+    run "jerseys: 1 clip" uv run pitchview jerseys --split valid --limit 1 --reader zeroshot
 
     epoch=$(seconds_of "detector timing")
     sam_clip=$(seconds_of "SAM 3.1: 1 clip")

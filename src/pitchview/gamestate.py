@@ -103,14 +103,18 @@ def _people(dets: pd.DataFrame, sam: pd.DataFrame, n_frames: int, fps: float, v:
 
 
 def _to_metres(people: pd.DataFrame, homographies: dict[int, np.ndarray]) -> pd.DataFrame:
+    return _to_metres_all(people, homographies).dropna(subset=["x_m", "y_m"])
+
+
+def _to_metres_all(people: pd.DataFrame, homographies: dict[int, np.ndarray]) -> pd.DataFrame:
+    """Every row, with x_m and y_m NaN where no pitch mapping is near."""
     xs, ys = np.full(len(people), np.nan), np.full(len(people), np.nan)
     for frame, idx in people.groupby("frame").indices.items():
         H = nearest_homography(homographies, int(frame))
         if H is not None:
             pts = to_pitch(H, people.iloc[idx][["foot_x", "foot_y"]].to_numpy(float))
             xs[idx], ys[idx] = pts[:, 0], pts[:, 1]
-    out = people.assign(x_m=xs, y_m=ys)
-    return out.dropna(subset=["x_m", "y_m"])
+    return people.assign(x_m=xs, y_m=ys)
 
 
 def _teams(people: pd.DataFrame, embeddings: dict | None, v: Variant) -> dict[int, str]:
@@ -265,6 +269,32 @@ def assemble(
     if v.merge_by_jersey:
         out = merge_by_jersey(out)
     return out[STATE_COLUMNS].reset_index(drop=True)
+
+
+def unplaced(
+    dets: pd.DataFrame,
+    sam: pd.DataFrame,
+    homographies: dict[int, np.ndarray],
+    state: pd.DataFrame,
+    n_frames: int,
+    fps: float = 25.0,
+    v: Variant = Variant(),  # noqa: B008  (frozen dataclass, safe as a default)
+) -> pd.DataFrame:
+    """SAM 3.1 people the game state leaves out only because their frame has no pitch mapping (a
+    close-up, a fast pan), for the video. Each takes the track id, role, team and jersey of the same
+    mask's nearest frame in the state; x_m and y_m stay NaN, so nothing scored or measured changes.
+    Masks the state never has stay out."""
+    people = _to_metres_all(_people(dets, sam, n_frames, fps, v), homographies)
+    people = people[people["x_m"].isna() & people["sam_obj_id"].isin(state["sam_obj_id"])]
+    if people.empty or state.empty:
+        return pd.DataFrame(columns=STATE_COLUMNS)
+    keys = {"frame": "int64", "sam_obj_id": "int64"}
+    known = state[["frame", "sam_obj_id", "track_id", "role", "team", "jersey"]].astype(keys).sort_values("frame")
+    rows = people[["frame", "sam_obj_id", "x_m", "y_m", "score" if "score" in people else "prob", *BOX]]
+    rows = rows.rename(columns={"prob": "score"}).astype(keys).sort_values("frame")
+    out = pd.merge_asof(rows, known.rename(columns={"frame": "near"}), left_on="frame", right_on="near",
+                        by="sam_obj_id", direction="nearest")  # fmt: skip
+    return out[STATE_COLUMNS].sort_values(["frame", "track_id"]).reset_index(drop=True)
 
 
 def ball_positions(dets: pd.DataFrame, homographies: dict[int, np.ndarray], min_score: float = 0.3,

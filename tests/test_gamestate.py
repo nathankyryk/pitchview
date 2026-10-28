@@ -9,6 +9,7 @@ from pitchview.gamestate import (
     split_by_jersey,
     to_predictions,
     unique_numbers,
+    unplaced,
 )
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
@@ -80,6 +81,24 @@ def test_sam_tracker_takes_ids_from_sam_and_roles_from_detections():
     assert state.groupby("track_id")["role"].first().to_dict() == {3: "player", 8: "referee"}
     assert len(state) == 2 * FRAMES  # every frame, no ByteTrack warm-up
     assert (state["sam_obj_id"] == state["track_id"]).all()
+
+
+def test_unplaced_keeps_people_in_frames_without_a_pitch_mapping_for_the_video():
+    n = 30
+    dets = _dets(n)
+    sam = pd.DataFrame(
+        [_sam_row(f, 3, (100 + 5 * f, 100, 140 + 5 * f, 200)) for f in range(1, n + 1)]
+        + [_sam_row(f, 9, (900, 300, 930, 380)) for f in range(1, n + 1)]  # nobody RF-DETR saw: never shown
+    )
+    Hs = {1: H, 2: H}  # then a close-up: frames more than 12 from frame 2 have no pitch mapping
+    v = Variant(tracker="sam", smooth=1)
+    state = assemble(dets, sam, Hs, None, {3: "14"}, n, v=v)
+    assert sorted(state["frame"]) == list(range(1, 15))
+    extra = unplaced(dets, sam, Hs, state, n, v=v)
+    assert sorted(extra["frame"]) == list(range(15, n + 1))
+    assert (extra["track_id"] == 3).all() and (extra["role"] == "player").all() and (extra["jersey"] == "14").all()
+    assert extra["x_m"].isna().all() and (extra["sam_obj_id"] == 3).all()
+    assert unplaced(dets, sam, {f: H for f in range(1, n + 1)}, state, n, v=v).empty
 
 
 def test_sam_box_gap_keeps_sam_people_only_near_detector_boxes():

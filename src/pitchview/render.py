@@ -368,7 +368,8 @@ def render_clip(
                 if text:
                     tags.append((r.ax, r.ay, colour, text))
                 shown = revealed and (tracks_only or text != "#?")  # the radar agrees with the tag
-                people.append((r.x_m, r.y_m, colour, number if shown else None))
+                if np.isfinite(r.x_m) and np.isfinite(r.y_m):  # no dot without a pitch position
+                    people.append((r.x_m, r.y_m, colour, number if shown else None))
         canvas = Image.fromarray(img)
         draw = ImageDraw.Draw(canvas)
         tags.sort(key=lambda t: t[3] != "#?")  # names on top, so a "#?" never covers one

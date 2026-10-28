@@ -328,7 +328,9 @@ def _tracks(out: Path, split: str, clip, tracker: str, dets: str) -> pd.DataFram
 
 
 JERSEY_STRIDE = 10  # read every 10th frame
-JERSEY_READER = "zeroshot"  # PARSeq as published; a fine-tuned one is weights/parseq_<name>.pt
+# PARSeq fine-tuned on every train shirt crop, 1 epoch (weights/parseq_gsr_all_e1.pt, `train-jersey`):
+# chosen on all 58 valid clips, 77.5% of player frames right vs 41.4% for "zeroshot" (PARSeq as published).
+JERSEY_READER = "gsr_all_e1"
 
 
 def _jersey_dir(out: Path, kind: str, tracker: str, dets: str, stride: int, crops: str = "box",
@@ -595,7 +597,7 @@ def assemble(
     show a number in a frame; with --episode-gap G, clash frames up to G apart form one clash, won
     throughout by the track that wins most of its frames (5, chosen on valid; -1: each frame on its own)."""
     from pitchview.evaluate import image_ids, write_predictions
-    from pitchview.gamestate import Variant, ball_positions, to_predictions
+    from pitchview.gamestate import Variant, ball_positions, to_predictions, unplaced
     from pitchview.gamestate import assemble as build
     from pitchview.jersey import read_frames, split_votes
     from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
@@ -633,6 +635,9 @@ def assemble(
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state.to_parquet(state_path)
         ball_positions(detections, Hs).to_parquet(state_path.with_name(f"{clip.name}_ball.parquet"))
+        if tracker == "sam":  # for the video only: people in frames without a pitch mapping
+            extra = unplaced(detections, sam_tracks, Hs, state, len(clip.frames), clip.fps, v)
+            extra.to_parquet(state_path.with_name(f"{clip.name}_unplaced.parquet"))
         write_predictions(out / "trackers", split, name, clip.name, to_predictions(state, image_ids(clip)))
         typer.echo(f"  {clip.name}: {len(state)} rows, {state['track_id'].nunique()} tracks")
 
@@ -679,6 +684,10 @@ def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str
             raise typer.Exit(f"{run} was assembled before boxes were kept: re-run `assemble --clips {clip.name}`")
         ball_path = OUT / "gamestate" / run / split / f"{clip.name}_ball.parquet"
         ball = pd.read_parquet(ball_path) if ball_path.exists() else None
+        extra_path = OUT / "gamestate" / run / split / f"{clip.name}_unplaced.parquet"
+        if extra_path.exists():  # people in frames without a pitch mapping: masks and tags, no radar dot
+            extra = pd.read_parquet(extra_path)
+            state = pd.concat([state, extra], ignore_index=True) if len(extra) else state
         mask_path = OUT / "sam_masks" / split / f"{clip.name}.jsonl"
         masks = _masks(mask_path, {f.index for f in clip.frames}) if mask_path.exists() else {}
         reads_path = _jersey_dir(OUT, "jersey_reads", tracker, dets, JERSEY_STRIDE, reader=JERSEY_READER)
