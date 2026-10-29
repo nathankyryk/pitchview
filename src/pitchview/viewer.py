@@ -177,10 +177,6 @@ def stats_card(manifest: dict, clip: str) -> str:
         lines.append(f"**Fastest player:** {who}, {fast['top_speed_kmh']:.1f} km/h")
     if "median_top_speed_kmh" in st:
         lines.append(f"**Median top speed:** {st['median_top_speed_kmh']:.1f} km/h (players tracked for 5 s or more)")
-    shapes = [f"{names.get(t, t)} {s['width_m']:.0f} m wide, {s['depth_m']:.0f} m deep"
-              for t, s in (st.get("shape") or {}).items()]  # fmt: skip
-    if shapes:
-        lines.append("**Average team shape:** " + "; ".join(shapes) + " (players in view)")
     return "\n\n".join(lines)
 
 

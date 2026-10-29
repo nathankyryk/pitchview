@@ -33,7 +33,7 @@ def test_cards_show_the_clip_scores_and_stats():
     stats = stats_card(MANIFEST, "SNGS-118")
     assert "### Stats for this clip" in stats and "this clip's 30 seconds only, not the whole match" in stats
     assert "FC St. Gallen 61%" in stats and "B. Stillhart (#10, FC Thun), 27.3 km/h" in stats
-    assert "FC St. Gallen 40 m wide" in stats
+    assert "team shape" not in stats.lower() and "m wide" not in stats
     other = stats_card(MANIFEST, "SNGS-121")
     assert "a player (unknown team)" in other and "From this clip only" in other
     assert clip_label(MANIFEST, "SNGS-118") == "SNGS-118 (game 7)"
