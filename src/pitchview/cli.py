@@ -671,7 +671,7 @@ def stats(name: str = "main", split: str = "test", smoke: bool = False, limit: i
 @app.command()
 def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str = "sam",
            dets: str = "model", backfill: bool = True, max_frames: int | None = None,
-           out_dir: Path = OUT / "videos", tab: str = "full") -> None:  # fmt: skip
+           out_dir: Path = OUT / "videos", tab: str = "full", fade: int = 10) -> None:  # fmt: skip
     """Annotated MP4 of each clip: team-coloured masks, nametags and a radar.
 
     Nametags show the name from rosters/<clip>.json ("L. Messi"), or "#10" without one, from the
@@ -679,12 +679,13 @@ def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str
     the video first reads the number (--tracker must then match the run's, for its reads).
     Needs the run's game state (`assemble`), SAM's saved masks and the jersey reads.
     --tab picks the viewer tab: full (this run), truth (the labels), specialist (--dets boxes with
-    ByteTrack ids) or foundation (SAM 3.1's own masks and tracks). Videos go to <out-dir>/<run or tab>/."""
+    ByteTrack ids) or foundation (SAM 3.1's own masks and tracks). Videos go to <out-dir>/<run or tab>/.
+    --fade N: a nametag fades out over N frames when its track ends or skips frames (0: at once)."""
     from pitchview.render import first_reads, load_roster, render_clip
 
     if tab != "full":
         for clip in _clips(split, False, None, clips):
-            _render_tab(clip, split, tab, dets, max_frames, out_dir / tab / f"{clip.name}.mp4")
+            _render_tab(clip, split, tab, dets, max_frames, out_dir / tab / f"{clip.name}.mp4", fade)
         return
     for clip in _clips(split, False, None, clips):
         state = pd.read_parquet(OUT / "gamestate" / run / split / f"{clip.name}.parquet")
@@ -705,7 +706,7 @@ def render(clips: list[str], split: str = "test", run: str = "sam", tracker: str
         roster = load_roster(Path("rosters") / f"{clip.name}.json")
         path = out_dir / run / f"{clip.name}.mp4"
         n = render_clip(clip.frames, state, masks, ball, roster, first, path, clip.fps, backfill,
-                        title=f"PitchView  |  {clip.name}", max_frames=max_frames)  # fmt: skip
+                        title=f"PitchView  |  {clip.name}", max_frames=max_frames, fade=fade)  # fmt: skip
         typer.echo(
             f"  {clip.name}: {n} frames -> {path} ({len(roster.get('left', {})) + len(roster.get('right', {}))} names)"
         )
@@ -718,7 +719,7 @@ TAB_TITLES = {
 }
 
 
-def _render_tab(clip, split: str, tab: str, dets: str, max_frames: int | None, path: Path) -> None:
+def _render_tab(clip, split: str, tab: str, dets: str, max_frames: int | None, path: Path, fade: int = 10) -> None:
     """The viewer's other tabs: the labels, the specialist's tracked boxes, or SAM 3.1 on its own."""
     from pitchview.render import load_roster, render_clip, truth_state
     from pitchview.track import bytetrack
@@ -739,7 +740,7 @@ def _render_tab(clip, split: str, tab: str, dets: str, max_frames: int | None, p
         raise typer.Exit(f"unknown tab {tab}: full, truth, specialist or foundation")
     n = render_clip(clip.frames, state, masks, ball, roster, {}, path, clip.fps, backfill=True,
                     title=f"{TAB_TITLES[tab]}  |  {clip.name}", max_frames=max_frames, style=style,
-                    sheet_only=False)  # fmt: skip
+                    sheet_only=False, fade=fade)  # fmt: skip
     typer.echo(f"  {clip.name}: {n} frames -> {path}")
 
 

@@ -184,6 +184,25 @@ def text_colour(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
     return (0, 0, 0) if 0.299 * r + 0.587 * g + 0.114 * b > 150 else (255, 255, 255)
 
 
+def fading_tags(last_seen: dict, live: dict, frame: int, fade: int) -> list[tuple]:
+    """Tags that fade out once their track stops being drawn, so a name doesn't vanish in one frame.
+
+    last_seen: track id -> (frame, ax, ay, colour, text) of its last drawn tag; live: track id -> text
+    of this frame's tags. Returns (ax, ay, colour, text, alpha) for each track last drawn 1 to `fade`
+    frames ago, alpha falling from about 1 towards 0. A fading name is dropped while another track
+    shows it (a hand-off or a link), so one name never shows twice; "#?" is not a name."""
+    if fade <= 0:
+        return []
+    names = {text for text in live.values() if text != "#?"}
+    out = []
+    for track, (seen, ax, ay, colour, text) in last_seen.items():
+        age = frame - seen
+        if track in live or not 1 <= age <= fade or (text != "#?" and text in names):
+            continue
+        out.append((ax, ay, colour, text, 1 - age / (fade + 1)))
+    return out
+
+
 class Radar:
     """A top-down pitch at `scale` px per metre, camera side at the bottom (GSR's +y)."""
 
@@ -310,9 +329,12 @@ def render_clip(
     max_frames: int | None = None,
     style: str = "full",
     sheet_only: bool = True,
+    fade: int = 10,
 ) -> int:
     """Write the annotated clip as H.264 MP4. Returns the number of frames written.
-    style "full": team colours, nametags and the radar; "tracks": perception only (see the module notes)."""
+    style "full": team colours, nametags and the radar; "tracks": perception only (see the module notes).
+    fade: frames over which a nametag fades out after its track ends or skips frames (style "full"
+    only: the tracks tabs' many short fragments would clutter); 0 makes tags vanish at once."""
     import av
     from pycocotools import mask as mask_utils
 
@@ -328,6 +350,8 @@ def render_clip(
     by_frame = {f: rows for f, rows in placed.groupby("frame")}
     ball_at = {} if ball is None else {int(r.frame): (r.x_m, r.y_m) for r in ball.itertuples(index=False)}
     radar = Radar(scale=5.0)
+    fade = 0 if tracks_only else fade
+    last_seen: dict[int, tuple] = {}  # track id -> its last drawn tag, for fading_tags
     tag_font = ImageFont.load_default(size=22)
     title_font = ImageFont.load_default(size=24)
 
@@ -366,19 +390,27 @@ def render_clip(
                 else:
                     text = tag_text(r.role, r.team, number, revealed, roster, sheet_only)
                 if text:
-                    tags.append((r.ax, r.ay, colour, text))
+                    tags.append((int(r.track_id), r.ax, r.ay, colour, text))
                 shown = revealed and (tracks_only or text != "#?")  # the radar agrees with the tag
                 if np.isfinite(r.x_m) and np.isfinite(r.y_m):  # no dot without a pitch position
                     people.append((r.x_m, r.y_m, colour, number if shown else None))
-        canvas = Image.fromarray(img)
-        draw = ImageDraw.Draw(canvas)
-        tags.sort(key=lambda t: t[3] != "#?")  # names on top, so a "#?" never covers one
-        for ax, ay, colour, text in tags:
+        faded = fading_tags(last_seen, {t[0]: t[4] for t in tags}, f.index, fade)
+        for track, ax, ay, colour, text in tags:
+            last_seen[track] = (f.index, ax, ay, colour, text)
+        # Fading tags under live ones, and names on top within each, so a "#?" never covers a name.
+        live = [(*t[1:], 1.0) for t in tags]
+        shown_tags = sorted(faded, key=lambda t: t[3] != "#?") + sorted(live, key=lambda t: t[3] != "#?")
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        for ax, ay, colour, text, alpha in shown_tags:
+            a = round(255 * alpha)
             left, top, right, bottom = draw.textbbox((0, 0), text, font=tag_font)
             w, h = right - left + 14, bottom - top + 10
             x0, y0 = tag_position(ax, ay, w, h, width, height)
-            draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=6, fill=colour, outline=(20, 20, 20))
-            draw.text((x0 + w / 2, y0 + h / 2), text, fill=text_colour(colour), font=tag_font, anchor="mm")
+            draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=6, fill=(*colour, a), outline=(20, 20, 20, a))
+            draw.text((x0 + w / 2, y0 + h / 2), text, fill=(*text_colour(colour), a), font=tag_font, anchor="mm")
+        canvas = Image.alpha_composite(Image.fromarray(img).convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(canvas)
         if title:
             draw.rounded_rectangle([16, 16, 30 + draw.textlength(title, font=title_font), 54], radius=6, fill=(0, 0, 0))
             draw.text((23, 35), title, fill=(255, 255, 255), font=title_font, anchor="lm")

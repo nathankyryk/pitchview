@@ -7,6 +7,7 @@ from pitchview.render import (
     FALLBACK_KITS,
     Radar,
     anchors,
+    fading_tags,
     first_reads,
     kit_colours,
     load_roster,
@@ -173,3 +174,24 @@ def test_shrink_reencodes_smaller_with_the_index_first(tmp_path):
         s = c.streams.video[0]
         assert (s.width, s.height) == (64, 36)
         assert sum(1 for _ in c.decode(video=0)) == 8
+
+
+def test_a_tag_fades_out_after_its_track_ends():
+    seen = {7: (10, 100.0, 50.0, (255, 0, 0), "L. Messi")}
+    ((ax, ay, colour, text, alpha),) = fading_tags(seen, {}, 11, fade=10)
+    assert (ax, ay, colour, text) == (100.0, 50.0, (255, 0, 0), "L. Messi")
+    assert 0.9 < alpha < 1
+    assert fading_tags(seen, {}, 20, fade=10)[0][4] < 0.1
+    assert fading_tags(seen, {}, 21, fade=10) == []  # gone after `fade` frames
+    assert fading_tags(seen, {}, 11, fade=0) == []  # fade 0: tags vanish at once
+
+
+def test_a_tag_drawn_again_is_live_not_fading():
+    seen = {7: (10, 100.0, 50.0, (255, 0, 0), "#10")}
+    assert fading_tags(seen, {7: "#10"}, 12, fade=10) == []
+
+
+def test_a_fading_name_gives_way_to_the_same_name_on_another_track():
+    seen = {7: (10, 100.0, 50.0, (255, 0, 0), "L. Messi"), 8: (10, 300.0, 50.0, (255, 0, 0), "#?")}
+    faded = fading_tags(seen, {9: "L. Messi", 10: "#?"}, 11, fade=10)
+    assert [t[3] for t in faded] == ["#?"]  # one "L. Messi" on screen; "#?" is not a name
