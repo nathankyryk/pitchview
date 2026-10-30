@@ -18,6 +18,8 @@ from pitchview.segment import (
     clean_mask,
     drop_offload_state_arg,
     mask_features,
+    match_masks,
+    rles,
     write_tracks,
 )
 
@@ -186,7 +188,13 @@ class CrashingSam:
         for frame in range(request["start_frame_index"], self.n_frames):
             if frame == crash:
                 raise RuntimeError(self.error)
-            yield {"frame_index": frame, "outputs": {"out_obj_ids": np.array([0, 1])}}
+            # SAM's id 0 stays on one person; id 1 is someone else after a restart (no overlap)
+            masks = np.zeros((2, 8, 8), bool)
+            masks[0, :4, :4] = True
+            masks[1, 4:, 4:] = True
+            if request["session_id"] > 0:
+                masks[1] = np.roll(masks[1], -4, axis=0)
+            yield {"frame_index": frame, "outputs": {"out_obj_ids": np.array([0, 1]), "out_binary_masks": masks}}
 
 
 def _sam(predictor):
@@ -196,13 +204,15 @@ def _sam(predictor):
     return tracker, clip
 
 
-def test_sam_crash_restarts_from_the_crashed_frame_with_new_ids():
+def test_sam_crash_restarts_from_the_crashed_frame_and_keeps_ids_that_overlap():
     predictor = CrashingSam(crash_at=[4, 4, None])  # the second session crashes at once: frame 5 is skipped
     tracker, clip = _sam(predictor)
     out = list(tracker.track(clip))
     assert [f for f, _ in out] == [1, 2, 3, 4, 6, 7, 8, 9, 10]  # GSR counts from 1
     assert list(out[3][1]["out_obj_ids"]) == [0, 1]
-    assert list(out[4][1]["out_obj_ids"]) == [2 * RESTART_ID_STEP, 2 * RESTART_ID_STEP + 1]
+    # the same person keeps id 0; the new one gets a fresh id; and the map holds for the session
+    assert list(out[4][1]["out_obj_ids"]) == [0, 2 * RESTART_ID_STEP + 1]
+    assert list(out[-1][1]["out_obj_ids"]) == [0, 2 * RESTART_ID_STEP + 1]
     assert predictor.prompts == [0, 4, 5]
     assert predictor.closed == [0, 1, 2]
 
@@ -211,3 +221,15 @@ def test_sam_other_errors_are_not_swallowed():
     tracker, clip = _sam(CrashingSam(crash_at=[3], error="CUDA out of memory"))
     with pytest.raises(RuntimeError, match="out of memory"):
         list(tracker.track(clip))
+
+
+def test_match_masks_is_one_to_one_and_needs_overlap():
+    prev = np.zeros((2, 10, 10), bool)
+    prev[0, :5, :5] = True
+    prev[1, 5:, 5:] = True
+    new = np.zeros((3, 10, 10), bool)
+    new[0, 5:, 5:] = True  # person 1
+    new[1, :5, :4] = True  # person 0, a little smaller (IoU 0.8)
+    new[2, :5, :5] = True  # also person 0, exactly: it wins
+    assert match_masks([7, 9], rles(prev), [20, 21, 22], rles(new)) == {20: 9, 22: 7}
+    assert match_masks([7], rles(prev[:1]), [], []) == {}

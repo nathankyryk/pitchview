@@ -99,6 +99,26 @@ def drop_offload_state_arg(model) -> None:
     model.init_state = init_state_compat
 
 
+def rles(masks: np.ndarray) -> list[dict]:
+    """COCO run-length encodings of (N, H, W) binary masks."""
+    from pycocotools import mask as mask_utils
+
+    if len(masks) == 0:
+        return []
+    return mask_utils.encode(np.asfortranarray(np.asarray(masks).transpose(1, 2, 0).astype(np.uint8)))
+
+
+def match_masks(prev_ids, prev_rles: list, ids, new_rles: list, min_iou: float = 0.5) -> dict[int, int]:
+    """One-to-one map from new ids to previous ids, by mask IoU (largest first, at least min_iou)."""
+    from pycocotools import mask as mask_utils
+
+    if len(prev_rles) == 0 or len(new_rles) == 0:
+        return {}
+    iou = np.asarray(mask_utils.iou(list(new_rles), list(prev_rles), [0] * len(prev_rles)), float)
+    rows, cols = linear_sum_assignment(-iou)
+    return {int(ids[r]): int(prev_ids[c]) for r, c in zip(rows, cols) if iou[r, c] >= min_iou}
+
+
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
@@ -130,19 +150,29 @@ class Sam31:
 
         SAM 3.1 can crash part-way through a clip ("No points are provided"): when it drops a
         player, it can also clear the first frame that the other players in that group are
-        tracked from (SNGS-130, frame 428, at the 128-track limit). A new session then starts
-        on the frame that crashed, with ids moved up by RESTART_ID_STEP so they can't clash
-        with the old ones. assemble's hand-off linking joins each player's two pieces."""
+        tracked from (SNGS-130 and SNGS-131 at the 128-track limit). A new session then starts
+        on the frame that crashed. Each person it finds keeps their old id when their mask
+        overlaps one from the frame before (match_masks); new people get ids moved up by
+        RESTART_ID_STEP, so they can't clash with old ones."""
         n_frames = min(max_frames, len(clip.frames)) if max_frames else len(clip.frames)
         last = n_frames - 1 if max_frames else None  # None: SAM runs to the end of the clip
-        start, restarts = 0, 0
+        start, restarts, prev = 0, 0, None  # prev: the last frame given out, as (ids, masks)
         while start < n_frames:
-            reached = start
+            reached, id_map = start, None
             try:
                 for sam_index, out in self._session(clip, prompt, prob_thresh, start, last):
                     reached = sam_index + 1
                     if restarts:
-                        out = {**out, "out_obj_ids": np.asarray(out["out_obj_ids"]) + restarts * RESTART_ID_STEP}
+                        ids = np.asarray(out["out_obj_ids"])
+                        if id_map is None:  # first frame after a restart
+                            masks = np.asarray(out["out_binary_masks"])
+                            id_map = match_masks(prev[0], rles(prev[1]), ids, rles(masks)) if prev else {}
+                        step = restarts * RESTART_ID_STEP
+                        out = {
+                            **out,
+                            "out_obj_ids": np.array([id_map.get(int(i), int(i) + step) for i in ids], np.int64),
+                        }
+                    prev = (np.asarray(out["out_obj_ids"]), np.asarray(out["out_binary_masks"]))
                     yield sam_index + 1, out  # SAM counts frames from 0, GSR from 1
                 return
             except RuntimeError as error:
@@ -226,13 +256,7 @@ class MaskWriter:
         self.rows: list[dict] = []
 
     def __call__(self, frame_index: int, out: FrameOutput) -> None:
-        from pycocotools import mask as mask_utils
-
-        masks = np.asarray(out["out_binary_masks"])
-        if masks.shape[0] == 0:
-            return
-        rles = mask_utils.encode(np.asfortranarray(masks.transpose(1, 2, 0).astype(np.uint8)))
-        for obj_id, rle in zip(out["out_obj_ids"], rles):
+        for obj_id, rle in zip(out["out_obj_ids"], rles(np.asarray(out["out_binary_masks"]))):
             self.rows.append(
                 {"frame": frame_index, "obj_id": int(obj_id), "size": rle["size"], "counts": rle["counts"].decode()}
             )
