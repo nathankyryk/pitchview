@@ -23,6 +23,8 @@ from pitchview.gsr import Clip
 
 # SAM's per-frame output: out_obj_ids (N,), out_probs (N,), out_binary_masks (N, H, W) bool
 FrameOutput = dict
+RESTART_ID_STEP = 10_000  # ids after a SAM 3.1 restart (see Sam31.track); a clip creates a few hundred at most
+MAX_RESTARTS = 20
 
 TRACK_SCHEMA = pa.schema(
     [
@@ -124,18 +126,47 @@ class Sam31:
     def track(
         self, clip: Clip, prompt: str = "person", prob_thresh: float = 0.5, max_frames: int | None = None
     ) -> Iterator[tuple[int, FrameOutput]]:
-        """Yield (GSR frame index, SAM output) for each frame, in order."""
+        """Yield (GSR frame index, SAM output) for each frame, in order.
+
+        SAM 3.1 can crash part-way through a clip ("No points are provided"): when it drops a
+        player, it can also clear the first frame that the other players in that group are
+        tracked from (SNGS-130, frame 428, at the 128-track limit). A new session then starts
+        on the frame that crashed, with ids moved up by RESTART_ID_STEP so they can't clash
+        with the old ones. assemble's hand-off linking joins each player's two pieces."""
+        n_frames = min(max_frames, len(clip.frames)) if max_frames else len(clip.frames)
+        last = n_frames - 1 if max_frames else None  # None: SAM runs to the end of the clip
+        start, restarts = 0, 0
+        while start < n_frames:
+            reached = start
+            try:
+                for sam_index, out in self._session(clip, prompt, prob_thresh, start, last):
+                    reached = sam_index + 1
+                    if restarts:
+                        out = {**out, "out_obj_ids": np.asarray(out["out_obj_ids"]) + restarts * RESTART_ID_STEP}
+                    yield sam_index + 1, out  # SAM counts frames from 0, GSR from 1
+                return
+            except RuntimeError as error:
+                if "No points are provided" not in str(error) or restarts >= MAX_RESTARTS:
+                    raise
+            restarts += 1
+            start = reached if reached > start else start + 1  # no frame came out: skip the one that crashed
+            print(f"  {clip.name}: SAM 3.1 crashed; new session from frame {start + 1}", flush=True)
+
+    def _session(
+        self, clip: Clip, prompt: str, prob_thresh: float, start: int, last: int | None
+    ) -> Iterator[tuple[int, FrameOutput]]:
+        """One SAM session: the text prompt on frame `start` (SAM counts from 0), then forward to
+        frame `last` (the clip's end when None). Yields (SAM frame index, output)."""
         frames_dir = clip.frames[0].path.parent
-        start = self.predictor.handle_request(
+        session_id = self.predictor.handle_request(
             {"type": "start_session", "resource_path": str(frames_dir), "offload_video_to_cpu": True}
-        )
-        session_id = start["session_id"]
+        )["session_id"]
         try:
             self.predictor.handle_request(
                 {
                     "type": "add_prompt",
                     "session_id": session_id,
-                    "frame_index": 0,
+                    "frame_index": start,
                     "text": prompt,
                     "output_prob_thresh": prob_thresh,
                 }
@@ -144,14 +175,14 @@ class Sam31:
                 "type": "propagate_in_video",
                 "session_id": session_id,
                 "propagation_direction": "forward",
-                "start_frame_index": 0,
+                "start_frame_index": start,
                 "output_prob_thresh": prob_thresh,
                 "evict_cached_frame_outputs": True,  # keeps memory flat over 750 frames
             }
-            if max_frames:
-                request["max_frame_num_to_track"] = max_frames - 1  # SAM's range is inclusive
+            if last is not None:
+                request["max_frame_num_to_track"] = last - start  # SAM's range is inclusive
             for response in self.predictor.handle_stream_request(request):
-                yield response["frame_index"] + 1, response["outputs"]  # SAM counts frames from 0, GSR from 1
+                yield response["frame_index"], response["outputs"]
         finally:
             self.predictor.handle_request({"type": "close_session", "session_id": session_id})
 

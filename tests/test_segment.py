@@ -1,11 +1,17 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 
 from pitchview.gsr import list_clips
 from pitchview.segment import (
+    RESTART_ID_STEP,
     GroundTruthTracks,
     MaskWriter,
+    Sam31,
     attach_masks,
     box_iou,
     clean_clip,
@@ -156,3 +162,52 @@ def test_sam_session_start_survives_the_extra_argument():
         resource_path="frames/", offload_video_to_cpu=True, offload_state_to_cpu=False, async_loading_frames=True
     )
     assert state == {"path": "frames/", "offload_video": True}
+
+
+class CrashingSam:
+    """Stand-in for SAM 3.1's predictor: session k crashes on the frame in crash_at[k] (None: no crash)."""
+
+    def __init__(self, crash_at, n_frames=10, error="No points are provided; please add points first"):
+        self.crash_at, self.n_frames, self.error = crash_at, n_frames, error
+        self.prompts, self.closed, self.sessions = [], [], 0
+
+    def handle_request(self, request):
+        if request["type"] == "start_session":
+            self.sessions += 1
+            return {"session_id": self.sessions - 1}
+        if request["type"] == "add_prompt":
+            self.prompts.append(request["frame_index"])
+        if request["type"] == "close_session":
+            self.closed.append(request["session_id"])
+        return {}
+
+    def handle_stream_request(self, request):
+        crash = self.crash_at[request["session_id"]]
+        for frame in range(request["start_frame_index"], self.n_frames):
+            if frame == crash:
+                raise RuntimeError(self.error)
+            yield {"frame_index": frame, "outputs": {"out_obj_ids": np.array([0, 1])}}
+
+
+def _sam(predictor):
+    tracker = Sam31.__new__(Sam31)  # no weights or GPU: only the session logic is under test
+    tracker.predictor = predictor
+    clip = SimpleNamespace(name="SNGS-000", frames=[SimpleNamespace(path=Path("frames/000001.jpg"))] * 10)
+    return tracker, clip
+
+
+def test_sam_crash_restarts_from_the_crashed_frame_with_new_ids():
+    predictor = CrashingSam(crash_at=[4, 4, None])  # the second session crashes at once: frame 5 is skipped
+    tracker, clip = _sam(predictor)
+    out = list(tracker.track(clip))
+    assert [f for f, _ in out] == [1, 2, 3, 4, 6, 7, 8, 9, 10]  # GSR counts from 1
+    assert list(out[3][1]["out_obj_ids"]) == [0, 1]
+    assert list(out[4][1]["out_obj_ids"]) == [2 * RESTART_ID_STEP, 2 * RESTART_ID_STEP + 1]
+    assert predictor.prompts == [0, 4, 5]
+    assert predictor.closed == [0, 1, 2]
+
+
+def test_sam_other_errors_are_not_swallowed():
+    tracker, clip = _sam(CrashingSam(crash_at=[3], error="CUDA out of memory"))
+    with pytest.raises(RuntimeError, match="out of memory"):
+        list(tracker.track(clip))
