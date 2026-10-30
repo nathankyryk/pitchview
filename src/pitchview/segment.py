@@ -100,7 +100,7 @@ def drop_offload_state_arg(model) -> None:
 class Sam31:
     """SAM 3.1 multiplex video predictor. CUDA only, so it runs on the pod."""
 
-    def __init__(self, checkpoint: Path, max_num_objects: int = 48, detect_batch: int | None = None):
+    def __init__(self, checkpoint: Path, max_num_objects: int = 128, detect_batch: int | None = None):
         import torch
         from sam3.model_builder import build_sam3_multiplex_video_predictor
 
@@ -110,7 +110,10 @@ class Sam31:
 
         self.predictor = build_sam3_multiplex_video_predictor(
             checkpoint_path=str(checkpoint),
-            max_num_objects=max_num_objects,  # the default (16) is below a busy frame's head count
+            # The builder's default (16) is below a busy frame's head count. SAM 3.1 never lets go of a
+            # player who leaves the picture, and once it holds this many tracks it drops new people: at 48,
+            # 38 of 49 test clips filled up (SNGS-145 lost everyone after a pan). 128 is sam3's own default.
+            max_num_objects=max_num_objects,
             use_fa3=False,  # FlashAttention 3 needs Hopper (H100); the RTX 4090 is Ada
         )
         drop_offload_state_arg(self.predictor.model)

@@ -100,9 +100,11 @@ if [ -d "$REPO_DIR/data" ] && [ ! -L "$REPO_DIR/data" ]; then
   rm -rf "$REPO_DIR/data"
 fi
 ln -sfn "$local_data" "$REPO_DIR/data"  # code reads data/..., which now lives on local disk
-uv run python scripts/download_gsr.py --zips "$zips" --out "$REPO_DIR/data/SoccerNetGS"
+# GSR_SPLITS="valid test" skips train (~20 GB) on a pod that only runs inference
+read -ra splits <<<"${GSR_SPLITS:-train valid test}"
+uv run python scripts/download_gsr.py --zips "$zips" --out "$REPO_DIR/data/SoccerNetGS" --splits "${splits[@]}"
 data="$REPO_DIR/data/SoccerNetGS/gamestate-2024"
-for split in train valid test; do
+for split in "${splits[@]}"; do
   echo "$split: $(find "$data/$split" -mindepth 1 -maxdepth 1 -type d | wc -l) clips"
 done
 df -h "$local_data" | tail -n 1

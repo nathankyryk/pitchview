@@ -40,7 +40,8 @@ def _clips(split: str, smoke: bool, limit: int | None = None, names: list[str] |
         missing = set(names) - {c.name for c in clips}
         if missing:
             raise typer.BadParameter(f"not in {split}: {', '.join(sorted(missing))}")
-        clips = [c for c in clips if c.name in names]
+        by_name = {c.name: c for c in clips}
+        clips = [by_name[n] for n in dict.fromkeys(names)]  # in the order given
     return clips[:SMOKE_CLIPS] if smoke else (clips[:limit] if limit else clips)
 
 
@@ -256,18 +257,21 @@ def detect(split: str = "test", smoke: bool = False, size: str = "medium", resol
 
 @app.command()
 def sam(split: str = "test", smoke: bool = False, limit: int | None = None, prompt: str = "person",
-        embed_stride: int = 5, demo: int = 0) -> None:  # fmt: skip
+        embed_stride: int = 5, demo: int = 0, clips: list[str] | None = None,
+        max_objects: int = 128) -> None:  # fmt: skip
     """SAM 3.1 'person' masks and tracks, plus box and masked jersey embeddings.
-    --demo N also keeps every mask of the first N clips (RLE), for the demo video."""
+    --demo N also keeps every mask of the first N clips (RLE), for the demo video.
+    --clips SNGS-145 --clips SNGS-116 runs only those clips, in that order.
+    --max-objects: how many tracks SAM 3.1 may hold at once (it keeps players who left the picture)."""
     import time
 
     from pitchview.segment import GroundTruthTracks, MaskWriter, Sam31, write_tracks
     from pitchview.teams import Embedder, EmbeddingCollector
 
     out = _out(smoke)
-    tracker = GroundTruthTracks() if smoke else Sam31(SAM_WEIGHTS)
+    tracker = GroundTruthTracks() if smoke else Sam31(SAM_WEIGHTS, max_num_objects=max_objects)
     embedder = Embedder()
-    for i, clip in enumerate(_clips(split, smoke, limit)):
+    for i, clip in enumerate(_clips(split, smoke, limit, clips)):
         path = out / "sam" / split / f"{clip.name}.parquet"
         if not _todo(path, clip.name):
             continue
@@ -399,7 +403,7 @@ def _masks(path: Path, frames: set[int]) -> dict[tuple[int, int], dict]:
 def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack", dets: str = "model",
             stride: int = JERSEY_STRIDE, limit: int | None = None, min_conf: float = MIN_CONF,
             allow_one: bool = False, merge_partial: bool = False, crops: str = "box",
-            reader: str = JERSEY_READER) -> None:  # fmt: skip
+            reader: str = JERSEY_READER, clips: list[str] | None = None) -> None:  # fmt: skip
     """Read jersey numbers per track with PARSeq (CPU is fine: ~40 crops/s), then vote per track.
 
     Every raw read is saved (jersey_reads_*). A clip whose reads are saved is only re-voted, in
@@ -420,7 +424,7 @@ def jerseys(split: str = "test", smoke: bool = False, tracker: str = "bytetrack"
     exclude = frozenset() if allow_one else NOT_PLAYER_NUMBERS
     weights = _reader_weights(reader)
     model = None
-    for clip in _clips(split, smoke, limit):
+    for clip in _clips(split, smoke, limit, clips):
         path = _jersey_dir(out, "jerseys", tracker, dets, stride, crops, reader) / split / f"{clip.name}.json"
         reads_path = (
             _jersey_dir(out, "jersey_reads", tracker, dets, stride, crops, reader) / split / f"{clip.name}.parquet"

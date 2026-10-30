@@ -18,6 +18,7 @@
 # Settings (environment variables):
 #   DETECTOR_SIZE=medium DETECTOR_RES=1120 DETECTOR_BATCH=4 DETECTOR_ACCUM=4 DETECTOR_EPOCHS=20
 #   PITCH_EPOCHS=20      MASK_CLIPS=49 (test clips whose full masks are kept)
+#   sam only: SAM_CLIPS=SNGS-145,SNGS-116,... runs only those test clips, in that order
 #   NO_STOP=1 keeps the pod running after train/infer
 #   retrain only: DETECTOR_NAME=v2 DETECTOR_LR=5e-5 DETECTOR_LR_ENCODER=7.5e-5 DETECTOR_SCHEDULE=cosine
 #     DETECTOR_WARMUP=1 DETECTOR_MIN_FACTOR=0.05 DETECTOR_PATIENCE=10, and DETECTOR_RES=1280
@@ -63,6 +64,7 @@ DETECTOR_ACCUM="${DETECTOR_ACCUM:-4}"
 DETECTOR_EPOCHS="${DETECTOR_EPOCHS:-20}"
 PITCH_EPOCHS="${PITCH_EPOCHS:-20}"
 MASK_CLIPS="${MASK_CLIPS:-49}"  # test clips whose full masks are kept (test has 49)
+SAM_CLIPS="${SAM_CLIPS:-}"
 NO_STOP="${NO_STOP:-0}"
 # yolo: the second specialist, on detector v2's data, resolution and epochs
 YOLO_NAME="${YOLO_NAME:-yolo26}"
@@ -86,7 +88,7 @@ DETECTOR_ACCUM=$DETECTOR_ACCUM DETECTOR_EPOCHS=$DETECTOR_EPOCHS PITCH_EPOCHS=$PI
 DETECTOR_NAME=$DETECTOR_NAME DETECTOR_LR=$DETECTOR_LR DETECTOR_LR_ENCODER=$DETECTOR_LR_ENCODER \
 DETECTOR_SCHEDULE=$DETECTOR_SCHEDULE DETECTOR_WARMUP=$DETECTOR_WARMUP DETECTOR_MIN_FACTOR=$DETECTOR_MIN_FACTOR \
 DETECTOR_PATIENCE=$DETECTOR_PATIENCE YOLO_NAME=$YOLO_NAME YOLO_MODEL=$YOLO_MODEL YOLO_IMGSZ=$YOLO_IMGSZ \
-YOLO_EPOCHS=$YOLO_EPOCHS YOLO_BATCH=$YOLO_BATCH JERSEY_EPOCHS=$JERSEY_EPOCHS HOLD_MINUTES=$HOLD_MINUTES \
+YOLO_EPOCHS=$YOLO_EPOCHS YOLO_BATCH=$YOLO_BATCH JERSEY_EPOCHS=$JERSEY_EPOCHS HOLD_MINUTES=$HOLD_MINUTES SAM_CLIPS=$SAM_CLIPS \
 bash $REPO_DIR/scripts/run_gpu_jobs.sh $stage; exec bash"
   echo "Started '$stage' in tmux. Watch it: tmux attach -t $stage   (leave it running: Ctrl-b then d)"
   echo "Status so far: cat $LOG_DIR/${stage}_status.txt"
@@ -253,10 +255,13 @@ jersey_steps() {
 sam_steps() {
   # Masks can't be remade once the volume is gone, so keep every one (RLE, ~10 MB a clip):
   # the viewer can then show and toggle each player's mask on any test clip.
-  run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS"
+  local only=() name
+  for name in ${SAM_CLIPS//,/ }; do only+=(--clips "$name"); done
+  run "SAM 3.1: test (masks of $MASK_CLIPS clips)" uv run pitchview sam --split test --demo "$MASK_CLIPS" "${only[@]}"
   run "SAM 3.1: valid x5" uv run pitchview sam --split valid --limit 5 --demo 5
   jersey_reader
-  run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam
+  run "jerseys: test, SAM tracks" uv run pitchview jerseys --split test --tracker sam "${only[@]}"
+  run "jerseys: valid x5, SAM tracks" uv run pitchview jerseys --split valid --limit 5 --tracker sam
 }
 
 run "update code" git pull --ff-only
