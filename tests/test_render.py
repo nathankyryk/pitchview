@@ -11,6 +11,7 @@ from pitchview.render import (
     first_reads,
     kit_colours,
     load_roster,
+    person_masks,
     short_name,
     tag_position,
     tag_text,
@@ -195,3 +196,12 @@ def test_a_fading_name_gives_way_to_the_same_name_on_another_track():
     seen = {7: (10, 100.0, 50.0, (255, 0, 0), "L. Messi"), 8: (10, 300.0, 50.0, (255, 0, 0), "#?")}
     faded = fading_tags(seen, {9: "L. Messi", 10: "#?"}, 11, fade=10)
     assert [t[3] for t in faded] == ["#?"]  # one "L. Messi" on screen; "#?" is not a name
+
+
+def test_person_masks_paints_every_piece_of_a_joined_person():
+    masks = {(5, 3): "torso", (5, 4): "legs", (6, 3): "torso6"}
+    assert person_masks(masks, 5, 3, "4") == ["torso", "legs"]
+    assert person_masks(masks, 5, 3, "") == ["torso"]
+    assert person_masks(masks, 6, 3, "4") == ["torso6"]  # the legs' mask isn't saved for frame 6
+    assert person_masks(masks, 5, -1, "") == [] and person_masks(masks, 7, 3, "") == []  # box fallback
+    assert person_masks(masks, 5, 3, float("nan")) == ["torso"]  # states from before sam_parts

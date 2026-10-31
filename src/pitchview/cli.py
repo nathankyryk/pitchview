@@ -590,6 +590,8 @@ def assemble(
     jersey_crops: str = "box", clips: list[str] | None = None, merge_by_jersey: bool = True,
     sam_box_gap: int = 3, split_by_jersey: bool = True, unique_numbers: bool = True,
     episode_gap: int = 5, jersey_reader: str = JERSEY_READER, link_handoffs: bool = True,
+    split_jumps: bool = True, jump_team_run: int = 4, jump_role_run: int = 10, join_parts: bool = True,
+    off_pitch: float = 5.0, keeper_by_kit: bool = True, sides_by_half: bool = True,
 ) -> None:  # fmt: skip
     """Join every stage into the game state and write official prediction files.
     --pitch oracle (perfect calibration) and --dets oracle (perfect detection) attribute errors.
@@ -602,9 +604,27 @@ def assemble(
     show a number in a frame; with --episode-gap G, clash frames up to G apart form one clash, won
     throughout by the track that wins most of its frames (5, chosen on valid; -1: each frame on its own).
     --link-handoffs (with --tracker sam) joins a track that lets go of a player to the track SAM 3.1
-    starts on them a moment later (gamestate.link_handoffs)."""
+    starts on them a moment later (gamestate.link_handoffs).
+    --split-jumps (with --tracker sam) cuts a track where SAM 3.1 jumps to another person: its kit
+    changes for --jump-team-run crops, or its detector box changes between referee and player for
+    --jump-role-run frames (gamestate.jump_cuts); each piece then gets its own role, team and number.
+    --join-parts (with --tracker sam) joins a person SAM 3.1 holds as two masks (torso and legs).
+    --off-pitch M drops people more than M metres outside the pitch lines (-1 keeps everyone).
+    --keeper-by-kit (with --tracker sam) makes a player in a keeper's kit a goalkeeper; needs
+    `pitchview keeper-kits` for the split and --dets first.
+    --sides-by-half names the two teams' sides once per match half, pooled over the half's clips
+    (gamestate.pooled_sides, from the game id and half in the clips' info), instead of per clip."""
     from pitchview.evaluate import image_ids, write_predictions
-    from pitchview.gamestate import Variant, ball_positions, to_predictions, unplaced
+    from pitchview.gamestate import (
+        Variant,
+        ball_positions,
+        clip_half,
+        pooled_sides,
+        side_evidence,
+        swap_sides,
+        to_predictions,
+        unplaced,
+    )
     from pitchview.gamestate import assemble as build
     from pitchview.jersey import read_frames, split_votes
     from pitchview.pitch import checked_homographies, frame_homographies, oracle_homography
@@ -613,7 +633,13 @@ def assemble(
     v = Variant(tracker=tracker, foot=foot, team_crops=team_crops, jersey=jersey, smooth=smooth,
                 merge_by_jersey=merge_by_jersey, sam_box_gap=sam_box_gap, split_by_jersey=split_by_jersey,
                 unique_numbers=unique_numbers, episode_gap=None if episode_gap < 0 else episode_gap,
-                link_handoffs=link_handoffs)  # fmt: skip
+                link_handoffs=link_handoffs, split_jumps=split_jumps, jump_team_run=jump_team_run,
+                jump_role_run=jump_role_run, join_parts=join_parts, off_pitch=off_pitch,
+                keeper_by_kit=keeper_by_kit)  # fmt: skip
+    kits = _keeper_kits(out, split, dets, team_crops) if tracker == "sam" and keeper_by_kit else {}
+    sides: dict[str, dict | None] = {}  # per clip: each named team's kit and place (side_evidence)
+    halves: dict[str, tuple] = {}  # per clip: (game id, half)
+    ids: dict[str, dict[int, str]] = {}
     for clip in _clips(split, smoke, limit, clips):
         detections = _detections(out, split, clip, dets)
         sam_path = out / "sam" / split / f"{clip.name}.parquet"
@@ -638,7 +664,9 @@ def assemble(
         reads = pd.read_parquet(reads_path) if reads_path.exists() else None
         pieces = split_votes(reads) if split_by_jersey and reads is not None else None
         evidence = read_frames(reads) if unique_numbers and reads is not None else None
-        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v, pieces, evidence)
+        game_kits = kits.get(str(clip.labels["info"].get("game_id", "")))
+        state = build(detections, sam_tracks, Hs, emb, numbers, len(clip.frames), clip.fps, v, pieces, evidence,
+                      reads, game_kits)  # fmt: skip
         state_path = out / "gamestate" / name / split / f"{clip.name}.parquet"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state.to_parquet(state_path)
@@ -646,8 +674,74 @@ def assemble(
         if tracker == "sam":  # for the video only: people in frames without a pitch mapping
             extra = unplaced(detections, sam_tracks, Hs, state, len(clip.frames), clip.fps, v)
             extra.to_parquet(state_path.with_name(f"{clip.name}_unplaced.parquet"))
-        write_predictions(out / "trackers", split, name, clip.name, to_predictions(state, image_ids(clip)))
+        ids[clip.name] = image_ids(clip)
+        write_predictions(out / "trackers", split, name, clip.name, to_predictions(state, ids[clip.name]))
         typer.echo(f"  {clip.name}: {len(state)} rows, {state['track_id'].nunique()} tracks")
+        if sides_by_half:
+            sides[clip.name] = side_evidence(state, emb, team_crops)
+            info = clip.labels["info"]
+            half = clip_half(info)
+            halves[clip.name] = (str(info.get("game_id", "")), half) if half is not None else None
+    if sides_by_half:
+        flips = sorted(pooled_sides(sides, halves))
+        for clip_name in flips:  # players' sides as named by the match half
+            state_path = out / "gamestate" / name / split / f"{clip_name}.parquet"
+            state = swap_sides(pd.read_parquet(state_path))
+            state.to_parquet(state_path)
+            extra_path = state_path.with_name(f"{clip_name}_unplaced.parquet")
+            if extra_path.exists():
+                swap_sides(pd.read_parquet(extra_path)).to_parquet(extra_path)
+            write_predictions(out / "trackers", split, name, clip_name, to_predictions(state, ids[clip_name]))
+        typer.echo(f"  sides named per match half: swapped {len(flips)} clips {flips}")
+
+
+def _keeper_kits(out: Path, split: str, dets: str, crops: str) -> dict[str, np.ndarray]:
+    """`keeper-kits` output: game id -> its two keeper kits (2, D), or {} before it has run."""
+    path = out / "keeper_kits" / dets / f"{split}.npz"
+    if not path.exists():
+        typer.echo(f"  no keeper kits at {path}: run `pitchview keeper-kits --split {split} --dets {dets}` first")
+        return {}
+    kits = np.load(path)
+    return {str(g): kits[crops][i] for i, g in enumerate(kits["game"])}
+
+
+@app.command("keeper-kits")
+def keeper_kits(split: str = "test", dets: str = "model", smoke: bool = False, min_crops: int = 20) -> None:
+    """The two keeper kits of each match, for `assemble --keeper-by-kit`: SAM 3.1 jersey crops inside the
+    detector's goalkeeper boxes, pooled over all of the match's clips in the split and clustered in two
+    (KMeans). Kits don't change within a match, and a clip often has no keeper box for a side because
+    the detector calls the keeper a player. Uses the game id from the clips' info, no labels."""
+    from sklearn.cluster import KMeans
+
+    from pitchview.gamestate import keeper_crops
+
+    out = _out(smoke)
+    pooled: dict[str, dict[str, list]] = {}
+    for clip in _clips(split, smoke, None, None):
+        sam_path = out / "sam" / split / f"{clip.name}.parquet"
+        if not sam_path.exists():
+            continue
+        sam_tracks = pq.read_table(sam_path).to_pandas()
+        emb = dict(np.load(sam_path.with_suffix(".npz")))
+        game = str(clip.labels["info"].get("game_id", ""))
+        found = keeper_crops(_detections(out, split, clip, dets), sam_tracks, emb, len(clip.frames), clip.fps)
+        for crops, vecs in found.items():
+            pooled.setdefault(game, {}).setdefault(crops, []).append(vecs)
+    games, centres = [], {"mask": [], "box": []}
+    for game, by_crops in sorted(pooled.items()):
+        if sum(len(v) for v in by_crops["mask"]) < min_crops:
+            typer.echo(f"  game {game}: too few keeper crops, skipped")
+            continue
+        games.append(game)
+        for crops, parts in by_crops.items():
+            vecs = np.concatenate(parts)
+            vecs = vecs / np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-9)
+            centres[crops].append(KMeans(n_clusters=2, n_init=10, random_state=0).fit(vecs).cluster_centers_)
+        typer.echo(f"  game {game}: {sum(len(v) for v in by_crops['mask'])} keeper crops")
+    path = out / "keeper_kits" / dets / f"{split}.npz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, game=np.array(games), **{k: np.array(v, dtype=np.float32) for k, v in centres.items()})
+    typer.echo(f"wrote {path} ({len(games)} games)")
 
 
 @app.command()

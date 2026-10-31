@@ -5,13 +5,20 @@ from pitchview.gamestate import (
     Variant,
     assemble,
     ball_positions,
+    clip_half,
+    jump_cuts,
     link_handoffs,
     merge_by_jersey,
+    pooled_sides,
+    side_evidence,
     split_by_jersey,
+    split_tracks,
+    swap_sides,
     to_predictions,
     unique_numbers,
     unplaced,
 )
+from pitchview.jersey import read_frames, split_votes
 
 # Pixels -> metres: x_m = x / 10 - 50, y_m = y / 10 - 30
 H = np.array([[0.1, 0, -50], [0, 0.1, -30], [0, 0, 1]], dtype=float)
@@ -315,3 +322,197 @@ def test_link_handoffs_chains_keep_one_number():
     )
     out = link_handoffs(state)
     assert out.groupby("track_id")["jersey"].agg(set).to_dict() == {0: {"25"}, 2: {"14"}}
+
+
+def test_jump_cuts_finds_lasting_changes_only():
+    frames = list(range(1, 101, 5))  # 20 crops, 5 frames apart
+    assert jump_cuts(frames, ["L"] * 10 + ["R"] * 10, 4) == [49]  # halfway from frame 46 to 51
+    assert jump_cuts(frames, ["L"] * 9 + ["R"] * 2 + ["L"] * 9, 4) == []  # a short run is noise
+    assert jump_cuts(frames, ["L"] * 6 + ["R"] * 6 + ["L"] * 8, 4) == [29, 59]  # there and back
+    assert jump_cuts(frames, ["L"] * 18 + ["R"] * 2, 4) == []  # too short at the end too
+    assert jump_cuts([], [], 4) == [] and jump_cuts([1], ["L"], 4) == []
+
+
+def test_split_tracks_gives_each_later_piece_a_new_id():
+    state = pd.DataFrame({"frame": [1, 2, 3, 4, 1, 2], "track_id": [5, 5, 5, 5, 7, 7]})
+    assert split_tracks(state, {5: [3]})["track_id"].tolist() == [5, 5, 8, 8, 7, 7]
+    assert split_tracks(state, {5: [2, 4], 7: [9]})["track_id"].tolist() == [5, 8, 8, 9, 7, 7]
+
+
+def _swap_clip(n=40):
+    """Red #8 (A, left) and blue #36 (B, right). SAM 3.1's masks 100 and 101 swap them at frame 21;
+    masks 102 (red) and 103 (blue) stay on their players."""
+    rng = np.random.default_rng(0)
+    kit = {"red": np.eye(16)[0], "blue": np.eye(16)[1]}
+    spots = {"A": (250, 100, "red"), "B": (650, 100, "blue"), "C": (300, 250, "red"), "D": (700, 250, "blue")}
+    dets, sam, reads, emb = [], [], [], {"frame": [], "obj_id": [], "box": [], "mask": []}
+    for f in range(1, n + 1):
+        on = {100: "A" if f <= 20 else "B", 101: "B" if f <= 20 else "A", 102: "C", 103: "D"}
+        for obj, who in on.items():
+            x, y, colour = spots[who]
+            dets.append(_box(f, x, y, 30, 60, "player"))
+            sam.append(_sam_row(f, obj, (x, y, x + 30, y + 60)))
+            vec = kit[colour] + rng.normal(0, 0.03, 16)
+            for key, value in (("frame", f), ("obj_id", obj), ("box", vec), ("mask", vec)):
+                emb[key].append(value)
+            number = {"A": "8", "B": "36"}.get(who)
+            if number:
+                reads.append({"track_id": obj, "frame": f, "number": number, "conf": 0.95})
+    emb = {k: np.array(v) for k, v in emb.items()}
+    return pd.DataFrame(dets), pd.DataFrame(sam), pd.DataFrame(reads), emb
+
+
+def test_split_jumps_gives_each_player_their_own_team_and_number_after_a_swap():
+    n = 40
+    Hs = {f: H for f in range(1, n + 1)}
+    dets, sam, reads, emb = _swap_clip(n)
+    v = Variant(tracker="sam", smooth=1)
+    state = assemble(dets, sam, Hs, emb, {100: "8", 101: "36"}, n, v=v, pieces=split_votes(reads),
+                     evidence=read_frames(reads), reads=reads)  # fmt: skip
+    a, b = state[state["x1"] == 250], state[state["x1"] == 650]
+    assert len(a) == len(b) == n
+    assert set(a["team"]) == {"left"} and set(a["jersey"]) == {"8"}
+    assert set(b["team"]) == {"right"} and set(b["jersey"]) == {"36"}
+    assert a["track_id"].nunique() == b["track_id"].nunique() == 1  # the pieces of each player rejoin
+    # Without any jersey reads, the kit alone cuts the swapped masks.
+    state = assemble(dets, sam, Hs, emb, None, n, v=v)
+    assert set(state.loc[state["x1"] == 250, "team"]) == {"left"}
+    assert set(state.loc[state["x1"] == 650, "team"]) == {"right"}
+    # Before: one team per mask, so each player shows the wrong team half the time.
+    old = assemble(dets, sam, Hs, emb, None, n, v=Variant(tracker="sam", smooth=1, split_jumps=False))
+    assert old.loc[old["x1"] == 250, "team"].nunique() == 2
+
+
+def test_split_jumps_cuts_a_referee_mask_that_moves_onto_a_player():
+    n = 30
+    Hs = {f: H for f in range(1, n + 1)}
+    dets = pd.DataFrame(
+        [_box(f, 600, 300, 40, 100, "referee") for f in range(1, n + 1)]
+        + [_box(f, 200, 100, 40, 100, "player") for f in range(1, n + 1)]
+    )
+    on = {f: (600, 300, 640, 400) if f <= 15 else (200, 100, 240, 200) for f in range(1, n + 1)}
+    sam = pd.DataFrame([_sam_row(f, 8, box) for f, box in on.items()])
+    state = assemble(dets, sam, Hs, None, None, n, v=Variant(tracker="sam", smooth=1))
+    pieces = state.groupby("track_id").agg(role=("role", "first"), first=("frame", "min"), last=("frame", "max"))
+    assert sorted(map(tuple, pieces.to_numpy().tolist())) == [("player", 16, 30), ("referee", 1, 15)]
+    old = assemble(dets, sam, Hs, None, None, n, v=Variant(tracker="sam", smooth=1, split_jumps=False))
+    assert old["track_id"].nunique() == 1
+
+
+def test_join_parts_makes_one_person_of_a_torso_mask_and_a_legs_mask():
+    dets = pd.DataFrame([_box(f, 200, 100, 40, 100, "player") for f in range(1, FRAMES + 1)])
+    sam = pd.DataFrame(
+        [_sam_row(f, 3, (202, 100, 238, 150), foot_x=215.0) for f in range(1, FRAMES + 1)]  # torso: IoU 0.45
+        + [_sam_row(f, 4, (204, 150, 236, 200), foot_x=222.0) for f in range(1, FRAMES + 1)]  # legs: IoU 0.4
+    )
+    state = assemble(dets, sam, _all_frames(), None, None, FRAMES, v=Variant(tracker="sam", smooth=1))
+    assert len(state) == FRAMES and set(state["track_id"]) == {3} and set(state["role"]) == {"player"}
+    assert set(state["sam_parts"]) == {"4"}
+    assert (state[["x1", "y1", "x2", "y2"]].to_numpy() == [202, 100, 238, 200]).all()  # the union box
+    assert np.allclose(state["x_m"], 222 / 10 - 50) and np.allclose(state["y_m"], 200 / 10 - 30)  # legs' foot
+    v = Variant(tracker="sam", smooth=1, join_parts=False)
+    assert assemble(dets, sam, _all_frames(), None, None, FRAMES, v=v).empty  # neither half matched: gone
+
+
+def test_join_parts_leaves_masks_that_match_a_box_on_their_own():
+    dets = pd.DataFrame([_box(f, 200, 100, 40, 100, "player") for f in range(1, FRAMES + 1)])
+    sam = pd.DataFrame(
+        [_sam_row(f, 3, (201, 101, 239, 200)) for f in range(1, FRAMES + 1)]  # the whole player
+        + [_sam_row(f, 4, (210, 120, 230, 140)) for f in range(1, FRAMES + 1)]  # a stray bit inside the box
+    )
+    state = assemble(dets, sam, _all_frames(), None, None, FRAMES, v=Variant(tracker="sam", smooth=1))
+    assert set(state["track_id"]) == {3} and set(state["sam_parts"]) == {""}
+
+
+def test_people_well_off_the_pitch_are_dropped():
+    # x_m = x / 10 - 50 and y_m = y / 10 - 30; the lines are at x = +-52.5 m and y = +-34 m
+    dets = pd.DataFrame(
+        [_box(f, 1130, 300, 40, 100, "goalkeeper") for f in range(1, FRAMES + 1)]  # x = 65 m, behind the goal
+        + [_box(f, 280, 550, 40, 100, "player") for f in range(1, FRAMES + 1)]  # y = 35 m: 1 m over the touchline
+    )
+    state = assemble(dets, NO_SAM, _all_frames(), None, None, FRAMES, v=Variant(smooth=1))
+    assert set(state["role"]) == {"player"}
+    kept = assemble(dets, NO_SAM, _all_frames(), None, None, FRAMES, v=Variant(smooth=1, off_pitch=-1))
+    assert set(kept["role"]) == {"player", "goalkeeper"}
+
+
+def _keeper_clip(n=30, detected_keeper=False):
+    """Two red and two blue players, and a keeper in green (x = -45 m) the detector calls a player."""
+    rng = np.random.default_rng(0)
+    kit = {"red": np.eye(16)[0], "blue": np.eye(16)[1], "green": np.eye(16)[2]}
+    people = [(250, 100, "red", "player"), (300, 250, "red", "player"), (650, 100, "blue", "player"),
+              (700, 250, "blue", "player"), (50, 300, "green", "player")]  # fmt: skip
+    if detected_keeper:  # a keeper the detector does see, in that half at the same time
+        people.append((30, 150, "green", "goalkeeper"))
+    dets, sam, emb = [], [], {"frame": [], "obj_id": [], "box": [], "mask": []}
+    for f in range(1, n + 1):
+        for i, (x, y, colour, role) in enumerate(people):
+            dets.append(_box(f, x, y, 30, 60, role))
+            sam.append(_sam_row(f, 100 + i, (x, y, x + 30, y + 60)))
+            vec = kit[colour] + rng.normal(0, 0.03, 16)
+            for key, value in (("frame", f), ("obj_id", 100 + i), ("box", vec), ("mask", vec)):
+                emb[key].append(value)
+    emb = {k: np.array(v) for k, v in emb.items()}
+    return pd.DataFrame(dets), pd.DataFrame(sam), emb
+
+
+def test_keeper_by_kit_makes_a_player_in_a_keeper_kit_the_goalkeeper_of_his_half():
+    n = 30
+    Hs = {f: H for f in range(1, n + 1)}
+    kits = np.stack([np.eye(16)[2], np.eye(16)[3]])  # the match's two keeper kits: green and yellow
+    v = Variant(tracker="sam", smooth=1)
+    dets, sam, emb = _keeper_clip(n)
+    state = assemble(dets, sam, Hs, emb, None, n, v=v, keeper_kits=kits)
+    keeper = state[state["x1"] == 50]
+    assert set(keeper["role"]) == {"goalkeeper"} and set(keeper["team"]) == {"left"}
+    assert set(state.loc[state["x1"] != 50, "role"]) == {"player"}
+    without = assemble(dets, sam, Hs, emb, None, n, v=v)
+    assert set(without.loc[without["x1"] == 50, "role"]) == {"player"}
+    dets10, sam10, emb10 = _keeper_clip(10)
+    short = assemble(dets10, sam10, {f: H for f in range(1, 11)}, emb10, None, 10, v=v, keeper_kits=kits)
+    assert set(short.loc[short["x1"] == 50, "role"]) == {"player"}  # 10 crops: too few to be sure
+    dets, sam, emb = _keeper_clip(n, detected_keeper=True)
+    state = assemble(dets, sam, Hs, emb, None, n, v=v, keeper_kits=kits)
+    assert set(state.loc[state["x1"] == 50, "role"]) == {"player"}  # his half already has a keeper
+
+
+def _sides(left_kit, left_x, right_kit, right_x):
+    unit = lambda v: np.asarray(v, float) / np.linalg.norm(v)
+    return {"left": (unit(left_kit), left_x), "right": (unit(right_kit), right_x)}
+
+
+def test_clip_half_reads_the_half_from_the_clip_info():
+    assert clip_half({"game_time_start": "2 - 23:00"}) == 2
+    assert clip_half({"game_time_start": "1 - 00:30"}) == 1
+    assert clip_half({}) is None
+
+
+def test_side_evidence_gives_each_team_its_kit_and_mean_x():
+    state = pd.DataFrame({"frame": [1, 1, 2, 1], "sam_obj_id": [5, 6, 5, 7], "role": ["player"] * 3 + ["goalkeeper"],
+                          "team": ["left", "right", "left", "right"], "x_m": [-10.0, 4.0, -6.0, 50.0]})  # fmt: skip
+    emb = {"frame": np.array([1, 1, 2, 1]), "obj_id": np.array([5, 6, 5, 7]),
+           "mask": np.array([[2.0, 0], [0, 3.0], [4.0, 0], [1.0, 1.0]])}  # fmt: skip
+    ev = side_evidence(state, emb)
+    assert np.allclose(ev["left"][0], [1, 0]) and ev["left"][1] == -8.0
+    assert np.allclose(ev["right"][0], [0, 1]) and ev["right"][1] == 4.0  # the keeper isn't a player
+    assert side_evidence(state[state["team"] == "left"], emb) is None
+
+
+def test_pooled_sides_names_a_coin_flip_clip_by_its_match_half():
+    red, white = [1.0, 0.1], [0.1, 1.0]
+    evidence = {
+        "a": _sides(red, -12.0, white, 9.0),  # red defends the left goal, clearly
+        "b": _sides(red, -3.0, white, 5.0),
+        "c": _sides(white, 30.2, red, 30.6),  # play in one half: this clip's own guess is wrong
+        "d": _sides(white, -20.0, red, 15.0),  # the other half: teams changed ends
+        "e": _sides(red, 2.0, white, 1.0),  # alone in its half: its own naming stands
+    }
+    groups = {"a": ("7", 1), "b": ("7", 1), "c": ("7", 1), "d": ("7", 2), "e": ("8", 1)}
+    assert pooled_sides(evidence, groups) == {"c"}
+    assert pooled_sides({**evidence, "f": None}, {**groups, "f": ("7", 1)}) == {"c"}
+
+
+def test_swap_sides_swaps_players_only():
+    state = pd.DataFrame({"role": ["player", "player", "goalkeeper", "referee", "player"],
+                          "team": ["left", "right", "left", None, None]})  # fmt: skip
+    assert swap_sides(state)["team"].fillna("-").tolist() == ["right", "left", "left", "-", "-"]

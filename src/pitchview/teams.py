@@ -102,18 +102,27 @@ class EmbeddingCollector:
         )
 
 
-def cluster_teams(embeddings: np.ndarray, track_ids: np.ndarray, seed: int = 0) -> dict[int, int]:
-    """Cluster crops into two teams, then give each track its majority cluster (0 or 1)."""
+def crop_clusters(embeddings: np.ndarray, seed: int = 0) -> np.ndarray:
+    """Each crop's kit: UMAP to 3-D, then KMeans with k=2 (0 or 1 per crop)."""
     import umap
     from sklearn.cluster import KMeans
 
     n_neighbors = max(2, min(15, len(embeddings) - 1))
     reduced = umap.UMAP(n_components=3, n_neighbors=n_neighbors, random_state=seed).fit_transform(embeddings)
-    labels = KMeans(n_clusters=2, n_init=10, random_state=seed).fit_predict(reduced)
+    return KMeans(n_clusters=2, n_init=10, random_state=seed).fit_predict(reduced)
+
+
+def majority_cluster(labels: np.ndarray, track_ids: np.ndarray) -> dict[int, int]:
+    """Each track's most common crop cluster."""
     votes: dict[int, Counter] = {}
     for track, label in zip(track_ids, labels):
         votes.setdefault(int(track), Counter())[int(label)] += 1
     return {track: counter.most_common(1)[0][0] for track, counter in votes.items()}
+
+
+def cluster_teams(embeddings: np.ndarray, track_ids: np.ndarray, seed: int = 0) -> dict[int, int]:
+    """Cluster crops into two teams, then give each track its majority cluster (0 or 1)."""
+    return majority_cluster(crop_clusters(embeddings, seed), track_ids)
 
 
 def name_sides(track_cluster: dict[int, int], track_mean_x: dict[int, float]) -> dict[int, str]:

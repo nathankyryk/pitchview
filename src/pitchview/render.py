@@ -34,7 +34,7 @@ ROLE_COLOURS = {"player": (66, 165, 245), "goalkeeper": (186, 104, 200), "refere
 TRACK_PALETTE = [(230, 25, 75), (60, 180, 75), (255, 225, 25), (0, 130, 200), (245, 130, 48), (145, 30, 180),
                  (70, 240, 240), (240, 50, 230), (210, 245, 60), (250, 190, 212), (0, 128, 128), (220, 190, 255),
                  (170, 110, 40), (255, 250, 200), (128, 0, 0), (170, 255, 195)]  # fmt: skip
-STATE_DEFAULTS = {"team": None, "jersey": None, "x_m": np.nan, "y_m": np.nan, "sam_obj_id": -1}
+STATE_DEFAULTS = {"team": None, "jersey": None, "x_m": np.nan, "y_m": np.nan, "sam_obj_id": -1, "sam_parts": ""}
 
 
 def short_name(full: str) -> str:
@@ -182,6 +182,15 @@ def text_colour(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
     """Black on light badges, white on dark ones."""
     r, g, b = rgb
     return (0, 0, 0) if 0.299 * r + 0.587 * g + 0.114 * b > 150 else (255, 255, 255)
+
+
+def person_masks(masks: dict, frame: int, sam_obj_id, sam_parts) -> list[dict]:
+    """One person's masks (RLE) in a frame: SAM 3.1's mask, then any further pieces of the same person
+    (sam_parts: SAM held them as separate masks, gamestate._join_parts). Empty without a mask."""
+    if not sam_obj_id >= 0 or (frame, int(sam_obj_id)) not in masks:
+        return []
+    ids = [int(sam_obj_id)] + [int(p) for p in (sam_parts if isinstance(sam_parts, str) else "").split()]
+    return [masks[(frame, i)] for i in ids if (frame, i) in masks]
 
 
 def fading_tags(last_seen: dict, live: dict, frame: int, fade: int) -> list[tuple]:
@@ -376,10 +385,10 @@ def render_clip(
         if rows is not None:
             for r in rows.itertuples(index=False):
                 colour = colour_of(r.role, r.team, r.track_id)
-                rle = masks.get((f.index, int(r.sam_obj_id))) if r.sam_obj_id >= 0 else None
-                if rle is not None:
+                rles = person_masks(masks, f.index, r.sam_obj_id, r.sam_parts)
+                for rle in rles:
                     blend_mask(img, mask_utils.decode(rle).astype(bool), colour)
-                else:
+                if not rles:
                     cv2.rectangle(img, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, 2)
                 number = r.jersey if isinstance(r.jersey, str) and r.jersey else None
                 if r.role == "goalkeeper" and not tracks_only:
