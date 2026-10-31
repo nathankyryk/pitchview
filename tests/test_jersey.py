@@ -144,20 +144,25 @@ def _reads(track, pattern):
 
 
 def test_split_votes_cuts_a_track_that_jumps_to_another_player():
-    # SNGS-123's track 5: #25 (one sure read, two unsure), then #31 for good
-    jump = [(141, "25", 0.98), (201, "7", 0.2), (271, "25", 0.63), (281, "25", 0.35), (451, "1", 0.9),
+    # SNGS-123's track 5: #25 (two sure reads, one unsure), then #31 for good
+    jump = [(141, "25", 0.98), (201, "7", 0.2), (271, "25", 0.83), (281, "25", 0.35), (451, "1", 0.9),
             (501, "31", 0.95), (511, "31", 0.83), (531, "31", 0.97), (581, "21", 0.8), (601, "31", 0.98)]  # fmt: skip
     # one player throughout: a stray "4" (half of "14"), and a lone sure misread with nothing behind it
     steady = [(1, "14", 0.9), (81, "4", 0.8), (261, "4", 0.3), (361, "14", 0.9), (371, "14", 0.95)]
     lone = [(10, "7", 0.9), (100, "17", 0.9), (110, "17", 0.9), (120, "17", 0.8)]
     # the earlier number is read again after the later one starts: no clean switch, no cut
     mixed = [(241, "33", 0.52), (261, "33", 0.95), (321, "23", 0.15), (381, "23", 0.85), (391, "33", 0.43)]
-    reads = pd.DataFrame(_reads(5, jump) + _reads(10, steady) + _reads(11, lone) + _reads(33, mixed) + _reads(40, []))
+    # SNGS-145's #16: four sure reads, then "10" once sure and twice unsure: a misread, not a jump
+    misread = [(1, "16", 0.94), (141, "16", 0.99), (151, "16", 0.99), (221, "16", 0.98), (231, "10", 0.98),
+               (291, "10", 0.21), (351, "10", 0.27)]  # fmt: skip
+    tracks = _reads(5, jump) + _reads(10, steady) + _reads(11, lone) + _reads(33, mixed) + _reads(40, [])
+    reads = pd.DataFrame(tracks + _reads(16, misread))
     pieces = split_votes(reads)
     assert pieces[5] == [(0, "25"), (392, "31")]  # halfway between the last 25 (281) and the first 31 (501)
     assert pieces[10] == [(0, "14")] and pieces[11] == [(0, "17")] and pieces[33] == [(0, "33")]
+    assert pieces[16] == [(0, "16")]
     unsplit = vote(load_reads(reads), min_conf=0.7, exclude=NOT_PLAYER_NUMBERS)
-    assert {t: p[0][1] for t, p in pieces.items() if len(p) == 1} == {t: unsplit[t] for t in (10, 11, 33)}
+    assert {t: p[0][1] for t, p in pieces.items() if len(p) == 1} == {t: unsplit[t] for t in (10, 11, 16, 33)}
 
 
 def test_split_votes_finds_a_second_jump():

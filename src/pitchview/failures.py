@@ -247,7 +247,11 @@ def draw_case(case: Case, clip, path) -> None:
         for frame, track, (x1, y1, x2, y2) in case.data["boxes"]:
             img = Image.open(images[frame]).convert("RGB")
             pad = max(x2 - x1, y2 - y1) * 1.5
-            crop = img.crop((int(x1 - pad), int(y1 - pad), int(x2 + pad), int(y2 + pad)))
+            left, top = int(x1 - pad), int(y1 - pad)
+            crop = img.crop((left, top, int(x2 + pad), int(y2 + pad)))
+            # mark the player, since other players can share the crop
+            ImageDraw.Draw(crop).rectangle([x1 - left - 3, y1 - top - 3, x2 - left + 3, y2 - top + 3],
+                                           outline=(255, 255, 255), width=2)  # fmt: skip
             crops.append(crop.resize((max(1, crop.width * 360 // max(crop.height, 1)), 360), Image.LANCZOS))
             labels.append(f"frame {frame}: track {track}")
         canvas = _strip(crops, labels, font)

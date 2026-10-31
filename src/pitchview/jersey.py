@@ -136,8 +136,10 @@ def split_votes(reads, min_conf: float = MIN_CONF, exclude: frozenset = NOT_PLAY
 
     reads: the table `pitchview jerseys` saves (track_id, frame, number, conf). A track splits where
     its confident reads (as in vote()) say A before and B after; no read at any confidence says A
-    after B's first confident read or B before A's last; A and B are each read at least `min_reads`
-    times on their side, and neither is a digit of the other ("4" is often half of a "14"). The cut
+    after B's first confident read or B before A's last; A and B each have at least `min_reads`
+    confident reads on their side (on test SNGS-145, #16 read once as "10" with confidence 0.98 cut
+    his track when unsure reads counted too; valid x5 47.1 -> 48.0 GS-HOTA when they stopped
+    counting); and neither is a digit of the other ("4" is often half of a "14"). The cut
     sits between the two sure reads where the number changes, halfway from the last (unsure) read
     of A to the first read of B. Each side is checked again, for a second jump.
     """
@@ -175,7 +177,9 @@ def _pieces(frames, numbers, confs, start, min_conf, exclude, min_reads, depth) 
                 continue  # read on the wrong side of the switch, at any confidence
             seen_a = [f for f, n in zip(frames, numbers) if n == a and f < hi]
             seen_b = [f for f, n in zip(frames, numbers) if n == b and f > lo]
-            if len(seen_a) < min_reads or len(seen_b) < min_reads:
+            sure_a = sum(n == a and f < hi and c >= min_conf for f, n, c in zip(frames, numbers, confs))
+            sure_b = sum(n == b and f > lo and c >= min_conf for f, n, c in zip(frames, numbers, confs))
+            if sure_a < min_reads or sure_b < min_reads:
                 continue
             support = sum(confs[i] for i in before if numbers[i] == a) + sum(confs[i] for i in after if numbers[i] == b)
             if support > top:  # cut in the gap between these two sure reads, after any unsure A, before any B
