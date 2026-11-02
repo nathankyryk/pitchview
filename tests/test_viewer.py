@@ -66,7 +66,7 @@ def test_compare_tab_appears_with_two_tabs(tmp_path):
     assert {"Compare", "Foundation", "Full system", "Left", "Right"} <= labels
 
 
-def test_space_folder_has_app_readme_viewer_and_bundle(tmp_path):
+def test_space_folder_has_static_page_readme_and_bundle(tmp_path):
     import json
 
     from pitchview.viewer import CREDITS, make_space
@@ -76,16 +76,19 @@ def test_space_folder_has_app_readme_viewer_and_bundle(tmp_path):
     (bundle / "manifest.json").write_text(json.dumps(MANIFEST))
     (bundle / "videos" / "full" / "SNGS-118.mp4").write_bytes(b"0" * 10)
     out = tmp_path / "space"
-    size = make_space(bundle, out, "6.30.0")
+    out.mkdir()
+    (out / "app.py").write_text("old Gradio app")  # left by the Gradio version: removed
+    size = make_space(bundle, out)
     assert (out / "demo" / "videos" / "full" / "SNGS-118.mp4").exists()
-    assert "from viewer import serve" in (out / "app.py").read_text()
-    assert "def make_space" in (out / "viewer.py").read_text(encoding="utf-8")
+    assert not (out / "app.py").exists()
+    page = (out / "index.html").read_text(encoding="utf-8")
+    assert "__DATA__" not in page and "GS-HOTA on this clip" in page and "demo/videos/full/SNGS-118.mp4" in page
     readme = (out / "README.md").read_text(encoding="utf-8")
-    assert readme.startswith("---\ntitle: PitchView") and "sdk_version: 6.30.0" in readme
+    assert readme.startswith("---\ntitle: PitchView") and "sdk: static" in readme
     assert "SAM 3.1 (Meta, SAM License)" in CREDITS and CREDITS in readme
     assert size > 10
     try:
-        make_space(tmp_path / "missing", out, "6.30.0")
+        make_space(tmp_path / "missing", out)
     except FileNotFoundError:
         pass
     else:

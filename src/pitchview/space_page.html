@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PitchView</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<!-- PitchView's demo as one static page, made by `pitchview space`. The data block at the end holds
+     the clips, tabs and cards; the videos are in demo/videos/<tab>/<clip>.mp4. It runs no model. -->
+<style>
+  :root {
+    --bg: #ffffff; --text: #1f2937; --muted: #6b7280; --line: #e5e7eb; --field: #f9fafb; --accent: #ea580c;
+    --chrome: 170px; /* header, tabs and credits: the video gets the rest of the screen height */
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0f19; --text: #f3f4f6; --muted: #9ca3af; --line: #374151; --field: #1f2937; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 15px/1.5 "Source Sans 3", "Source Sans Pro", ui-sans-serif, system-ui, sans-serif; }
+  .page { min-height: 100vh; padding: 12px 24px; display: flex; flex-direction: column; gap: 10px; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  #title { flex: 1 1 400px; margin: 0; color: var(--muted); }
+  #title strong:first-child { font-size: 1.4rem; color: var(--text); margin-right: 0.6rem; }
+  select { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line);
+           border-radius: 8px; padding: 6px 10px; min-width: 200px; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button { font: inherit; color: var(--text); background: none; border: 0; border-bottom: 2px solid transparent;
+               margin-bottom: -1px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+  nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; }
+  .view { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .view > .main { flex: 0 1 calc((100vh - var(--chrome)) * 16 / 9); min-width: min(100%, 480px); }
+  aside { flex: 1 1 260px; max-width: 520px; }
+  .score p { margin: 0; color: var(--muted); }
+  .score h1 { font-size: 3.2rem; font-weight: 700; line-height: 1.1; margin: 2px 0 4px; }
+  .stats h4 { margin: 18px 0 2px; font-size: 0.8rem; font-weight: 400; letter-spacing: 0.04em;
+              text-transform: uppercase; color: var(--muted); }
+  .stats p { margin: 0; }
+  .stats p:last-child, .note p, footer p { font-size: 0.8rem; color: var(--muted); }
+  .stats p:last-child { margin-top: 18px; }
+  .note p { margin: 12px 0 0; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .controls select { flex: 1 1 200px; }
+  .btn { font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line);
+         border-radius: 8px; padding: 6px 16px; cursor: pointer; }
+  .btn.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .pair { display: flex; flex-wrap: wrap; gap: 16px; }
+  .pair > video { flex: 1 1 0; min-width: min(100%, 360px); max-height: calc(100vh - var(--chrome) - 60px); }
+  footer { margin-top: auto; }
+  footer p { margin: 0; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <p id="title"></p>
+    <select id="clip" aria-label="Clip"></select>
+  </header>
+  <nav id="tabs" role="tablist"></nav>
+  <section id="single" class="view">
+    <div class="main"><video id="video" controls playsinline preload="metadata"></video></div>
+    <aside>
+      <div class="score" id="score"></div>
+      <div class="stats" id="stats"></div>
+      <div class="note" id="blurb"></div>
+    </aside>
+  </section>
+  <section id="compare" hidden>
+    <div class="controls">
+      <select id="pickA" aria-label="Left"></select>
+      <button class="btn primary" id="play">Play both</button>
+      <button class="btn" id="pause">Pause both</button>
+      <select id="pickB" aria-label="Right"></select>
+    </div>
+    <div class="pair">
+      <video id="videoA" controls playsinline preload="metadata"></video>
+      <video id="videoB" controls playsinline preload="metadata"></video>
+    </div>
+  </section>
+  <footer id="credits"></footer>
+</div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const $ = (id) => document.getElementById(id);
+  let clip = D.clips[0].id;
+  let tab = D.first_tab;
+
+  $("title").innerHTML = D.header;
+  $("credits").innerHTML = D.credits;
+  for (const c of D.clips) $("clip").add(new Option(c.label, c.id));
+  for (const id of ["pickA", "pickB"]) for (const t of D.tabs) $(id).add(new Option(t.title, t.id));
+  [$("pickA").value, $("pickB").value] = D.compare;
+  const names = D.tabs.map((t) => [t.id, t.title]);
+  if (D.tabs.length > 1) names.push(["compare", "Compare"]);
+  for (const [id, title] of names) {
+    const b = document.createElement("button");
+    b.textContent = title;
+    b.dataset.tab = id;
+    b.setAttribute("role", "tab");
+    b.onclick = () => show(id);
+    $("tabs").append(b);
+  }
+
+  const url = (t) => (D.videos[t] || {})[clip] || "";
+
+  // Switching views keeps the time, so the same moment can be seen in each view.
+  function load(video, src, keep) {
+    if ((video.getAttribute("src") || "") === src) return;
+    const t = keep ? video.currentTime : 0;
+    const playing = keep && !video.paused;
+    if (!src) return video.removeAttribute("src");
+    video.src = src;
+    video.addEventListener("loadedmetadata", () => {
+      if (t) video.currentTime = t;
+      if (playing) video.play();
+    }, { once: true });
+  }
+
+  function show(next, keep = true) {
+    tab = next;
+    for (const b of $("tabs").children) b.setAttribute("aria-selected", b.dataset.tab === tab);
+    const compare = tab === "compare";
+    $("single").hidden = compare;
+    $("compare").hidden = !compare;
+    if (compare) {
+      $("video").pause();
+      load($("videoA"), url($("pickA").value), false);
+      load($("videoB"), url($("pickB").value), false);
+      return;
+    }
+    $("videoA").pause();
+    $("videoB").pause();
+    load($("video"), url(tab), keep);
+    const cards = D.cards[clip];
+    $("score").innerHTML = cards.score[tab] || "";
+    $("stats").innerHTML = cards.stats;
+    $("blurb").innerHTML = D.tabs.find((t) => t.id === tab).blurb;
+  }
+
+  $("clip").onchange = (e) => {
+    clip = e.target.value;
+    show(tab, false);
+  };
+  $("pickA").onchange = (e) => load($("videoA"), url(e.target.value), false);
+  $("pickB").onchange = (e) => load($("videoB"), url(e.target.value), false);
+  // Play both in step from the left one's time, or from the start once it has ended.
+  $("play").onclick = () => {
+    const a = $("videoA"), b = $("videoB");
+    const t = a.ended ? 0 : a.currentTime;
+    for (const v of [a, b]) { v.pause(); v.currentTime = t; }
+    for (const v of [a, b]) v.play();
+  };
+  $("pause").onclick = () => { $("videoA").pause(); $("videoB").pause(); };
+  show(tab);
+</script>
+</body>
+</html>

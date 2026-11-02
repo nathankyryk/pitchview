@@ -1196,15 +1196,13 @@ def viewer(bundle: Path = Path("demo"), port: int = 7860, share: bool = False) -
 
 @app.command()
 def space(bundle_dir: Path = Path("demo_720"), out: Path = Path("space")) -> None:
-    """A Hugging Face Space folder (app, README with credits, viewer, bundle), ready to upload.
-    Make a small bundle first: `pitchview bundle <clips> --height 720 --out demo_720`.
+    """A static Hugging Face Space folder (the viewer as one page, README with credits, bundle), ready
+    to upload. Make a small bundle first: `pitchview bundle <clips> --height 720 --out demo_720`.
     Upload: `hf upload <user>/pitchview space . --repo-type space`."""
-    from importlib.metadata import version
-
     from pitchview.viewer import make_space
 
     try:
-        size = make_space(bundle_dir, out, version("gradio"))
+        size = make_space(bundle_dir, out)
     except FileNotFoundError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e

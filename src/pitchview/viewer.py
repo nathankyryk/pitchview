@@ -1,12 +1,12 @@
 """PitchView's demo viewer: pre-rendered clips with their scores and match stats.
 
-It reads a bundle folder made by `pitchview bundle` and runs no model, so it can be served
-from a free Hugging Face Space:
+It reads a bundle folder made by `pitchview bundle` and runs no model:
 
     <bundle>/manifest.json            tabs, clips, scores and stats
     <bundle>/videos/<tab>/<clip>.mp4  one rendered video per tab and clip
 
-Only gradio and the standard library are used here, so the Space needs nothing else.
+`pitchview viewer` serves it with Gradio. For the free Hugging Face Space, `pitchview space` writes the
+same viewer as one static page (space_page.html) with the bundle beside it.
 """
 
 from __future__ import annotations
@@ -84,9 +84,8 @@ title: PitchView
 emoji: ⚽
 colorFrom: green
 colorTo: gray
-sdk: gradio
-sdk_version: {gradio}
-app_file: app.py
+sdk: static
+app_file: index.html
 pinned: false
 license: agpl-3.0
 short_description: Soccer game state from broadcast video, on SoccerNet GSR
@@ -97,33 +96,64 @@ short_description: Soccer game state from broadcast video, on SoccerNet GSR
 Broadcast soccer video in, game state out: every player's team, role, jersey number and position
 on the pitch, frame by frame, scored on SoccerNet's Game State Reconstruction benchmark.
 
-This Space plays pre-rendered test clips and runs no model. Code, method and full results: {repo}
+This Space is one static page that plays pre-rendered test clips; it runs no model. Code, method and
+full results: {repo}
 
 {credits}
 """
 
-SPACE_APP = '''"""PitchView's demo: pre-rendered clips with their scores. It runs no model. Made by `pitchview space`."""
 
-from pathlib import Path
-
-from viewer import serve
-
-serve(Path(__file__).parent / "demo")
-'''
+def compare_pair(tabs: list[str]) -> tuple[str, str]:
+    """The two tabs Compare opens with: the untrained foundation model against the full system."""
+    return ("foundation", tabs[-1]) if "foundation" in tabs else (tabs[0], tabs[-1])
 
 
-def make_space(bundle: Path, out: Path, gradio_version: str) -> int:
-    """A Hugging Face Space folder: app.py, a README with the Space settings and credits, this
-    module as viewer.py, the bundle as demo/, and Git LFS rules for the videos. Returns its size in bytes."""
+def static_page(bundle: Path) -> str:
+    """The viewer as one static HTML page (space_page.html) for a free Hugging Face Space: the
+    same tabs, cards and Compare, with the cards rendered here by the functions the Gradio app uses."""
+    from markdown_it import MarkdownIt
+
+    md = MarkdownIt("commonmark", {"html": False})
+    bundle = Path(bundle)
+    manifest = load_manifest(bundle)
+    clips = list(manifest["clips"])
+    tabs = [t for t in TABS if any(video_path(bundle, t, c) for c in clips)]
+    link = f'<a href="{REPO}">{REPO}</a>'
+    data = {
+        "header": md.renderInline(header(manifest)),
+        "credits": md.render(CREDITS).replace(REPO, link, 1),
+        "tabs": [{"id": t, "title": TABS[t][0], "blurb": md.render(TABS[t][1])} for t in tabs],
+        "first_tab": "full" if "full" in tabs else tabs[0],
+        "compare": compare_pair(tabs),
+        "clips": [{"id": c, "label": clip_label(manifest, c)} for c in clips],
+        "cards": {
+            c: {
+                "stats": md.render(stats_card(manifest, c)),
+                "score": {t: md.render(score_card(manifest, c, t)) for t in tabs},
+            }
+            for c in clips
+        },
+        "videos": {t: {c: f"demo/videos/{t}/{c}.mp4" for c in clips if video_path(bundle, t, c)} for t in tabs},
+    }
+    # "</" would end the <script> block early; "<\/" reads the same in JSON.
+    blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    return (Path(__file__).parent / "space_page.html").read_text(encoding="utf-8").replace("__DATA__", blob)
+
+
+def make_space(bundle: Path, out: Path) -> int:
+    """A static Hugging Face Space folder: index.html (the viewer as one page), a README with the
+    Space settings and credits, the bundle as demo/, and Git LFS rules for the videos. Static Spaces
+    are free; Gradio ones need a paid plan. Returns the folder's size in bytes."""
     bundle, out = Path(bundle), Path(out)
     if not (bundle / "manifest.json").exists():
         raise FileNotFoundError(f"{bundle} has no manifest.json: run `pitchview bundle ... --out {bundle}` first")
     out.mkdir(parents=True, exist_ok=True)
+    for old in ("app.py", "viewer.py"):  # left by the Gradio version of this folder
+        (out / old).unlink(missing_ok=True)
     shutil.copytree(bundle, out / "demo", dirs_exist_ok=True)
-    shutil.copyfile(__file__, out / "viewer.py")
     files = {
-        "app.py": SPACE_APP,
-        "README.md": SPACE_README.format(gradio=gradio_version, repo=REPO, credits=CREDITS),
+        "index.html": static_page(bundle),
+        "README.md": SPACE_README.format(repo=REPO, credits=CREDITS),
         ".gitattributes": "*.mp4 filter=lfs diff=lfs merge=lfs -text\n",
     }
     for name, text in files.items():
@@ -209,7 +239,7 @@ PAUSE_BOTH = """() => {
 def _compare(gr, bundle: Path, tabs: list[str], clip: str) -> tuple:
     """Any two tabs side by side on the same clip."""
     titles = [(TABS[t][0], t) for t in tabs]
-    left, right = (tabs[0], tabs[-1]) if "foundation" not in tabs else ("foundation", tabs[-1])
+    left, right = compare_pair(tabs)
     with gr.Tab("Compare", id="compare"):
         # One slim row: each picker sits over its video, the buttons between them.
         with gr.Row(elem_classes="pv-controls"):

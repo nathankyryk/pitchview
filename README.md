@@ -2,6 +2,8 @@
 
 PitchView turns broadcast soccer video into the game state: every player's team, role, jersey number and position on the pitch in metres, frame by frame.
 
+**[Watch the demo](https://huggingface.co/spaces/kyryk/pitchview)**: 5 test clips in each view, side by side, with each clip's score.
+
 ![PitchView on test clip SNGS-118](docs/demo_frame.jpg)
 
 *Test clip SNGS-118: each player's SAM 3.1 mask in their team's colour, a name from their read jersey number and the match sheet, and every position on the pitch (inset).*
@@ -351,7 +353,7 @@ More reports, all from saved outputs:
 
 `bundle` collects each clip's videos (rendering any that are missing), its scores and its match stats into `demo/`; `--height 720` makes smaller videos for a Hugging Face Space. `viewer` serves that folder with Gradio and runs no model. It has a tab per view (ground truth, specialist, foundation, full system) and a Compare tab that plays any two side by side.
 
-`pitchview space` turns a 720p bundle (`bundle ... --height 720 --out demo_720`) into a Hugging Face Space folder: app, Space settings and credits, about 130 MB for 5 clips.
+`pitchview space` turns a 720p bundle (`bundle ... --height 720 --out demo_720`) into a static Hugging Face Space folder: the viewer as one HTML page (same tabs, cards and Compare, no server), Space settings and credits, about 125 MB for 5 clips. Static Spaces are free; Gradio Spaces need a paid plan. The live demo is https://huggingface.co/spaces/kyryk/pitchview.
 
 </details>
 
