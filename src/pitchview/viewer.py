@@ -106,9 +106,9 @@ SPACE_APP = '''"""PitchView's demo: pre-rendered clips with their scores. It run
 
 from pathlib import Path
 
-from viewer import build
+from viewer import serve
 
-build(Path(__file__).parent / "demo").launch()
+serve(Path(__file__).parent / "demo")
 '''
 
 
@@ -134,39 +134,39 @@ def make_space(bundle: Path, out: Path, gradio_version: str) -> int:
 def header(manifest: dict) -> str:
     o = manifest["overall"]
     return (
-        "# PitchView\n"
-        "Broadcast soccer video in, game state out: every player's team, role, jersey number and position "
-        "on the pitch, frame by frame.\n\n"
-        f"On the SoccerNet GSR {o['split']} split ({o['clips']} clips), PitchView scores **{o['gs_hota']:.1f} "
-        f"GS-HOTA**, against {o['baseline']:.1f} for the official baseline, scored with the same evaluator."
+        "**PitchView** Every player's team, role, jersey number and pitch position, from broadcast video. "
+        f"**{o['gs_hota']:.1f} GS-HOTA** on the SoccerNet GSR {o['split']} split ({o['clips']} clips), "
+        f"against {o['baseline']:.1f} for the official baseline."
     )
 
 
 def score_card(manifest: dict, clip: str, tab: str) -> str:
+    """This clip's score for one tab: a label, the number large, then the baseline."""
     s = manifest["clips"][clip].get("scores", {}).get(tab)
     if not s:
         return ""
     if s.get("gs_hota") is None:
         return ""
-    lines = [f"### This clip\n**GS-HOTA {s['gs_hota']:.1f}**"]
+    lines = ["GS-HOTA on this clip", f"# {s['gs_hota']:.1f}"]
+    if s.get("baseline") is not None:
+        lines.append(f"Official baseline {s['baseline']:.1f}")
     if s.get("note"):
         lines.append(s["note"])
-    if s.get("baseline") is not None:
-        lines.append(f"Official baseline: {s['baseline']:.1f}")
     return "\n\n".join(lines)
 
 
 def stats_card(manifest: dict, clip: str) -> str:
-    """The clip's stats, labelled as the clip's: a GSR clip is 30 seconds of one match."""
+    """The clip's stats, labelled as the clip's: a GSR clip is 30 seconds of one match. Each stat
+    is a small heading over its value; what they measure is in the last line."""
     entry = manifest["clips"][clip]
     st = entry.get("stats") or {}
     names = {**TEAM_NAMES, **(entry.get("teams") or {})}
     seconds = entry.get("seconds")
     span = f"this clip's {seconds:.0f} seconds" if seconds else "this clip"
-    lines = ["### Stats for this clip", f"From {span} only, not the whole match, and only the players in view."]
+    lines, notes = [], [f"From {span} only, not the whole match, and only the players in view."]
     if share := st.get("possession_pct"):
-        teams = ", ".join(f"{names.get(t, t)} {p:.0f}%" for t, p in share.items())
-        lines.append(f"**Possession:** {teams} (share of the clip each team had the player nearest the ball)")
+        lines.append("#### Possession\n" + " · ".join(f"{names.get(t, t)} {p:.0f}%" for t, p in share.items()))
+        notes.append("Possession: share of the clip each team had the player nearest the ball.")
     if fast := st.get("fastest"):
         team = names.get(fast.get("team"), "unknown team")
         number = f"#{fast['jersey']}" if fast.get("jersey") else ""
@@ -174,28 +174,31 @@ def stats_card(manifest: dict, clip: str) -> str:
             who = f"{fast['name']} ({number}, {team})" if number else f"{fast['name']} ({team})"
         else:
             who = f"{number or 'a player'} ({team})"
-        lines.append(f"**Fastest player:** {who}, {fast['top_speed_kmh']:.1f} km/h")
+        lines.append(f"#### Fastest player\n{who}, {fast['top_speed_kmh']:.1f} km/h")
     if "median_top_speed_kmh" in st:
-        lines.append(f"**Median top speed:** {st['median_top_speed_kmh']:.1f} km/h (players tracked for 5 s or more)")
-    return "\n\n".join(lines)
+        lines.append(f"#### Median top speed\n{st['median_top_speed_kmh']:.1f} km/h")
+        notes.append("Median top speed: players tracked for 5 s or more.")
+    return "\n\n".join([*lines, " ".join(notes)])
 
 
 def _tab(gr, bundle: Path, manifest: dict, tab: str, clip: str) -> tuple:
     title, blurb = TABS[tab]
-    with gr.Tab(title, id=tab):
-        gr.Markdown(blurb)
-        with gr.Row():
-            video = gr.Video(value=video_path(bundle, tab, clip), show_label=False, scale=3)
-            with gr.Column(scale=1):
-                score = gr.Markdown(score_card(manifest, clip, tab))
-                stats = gr.Markdown(stats_card(manifest, clip))
+    with gr.Tab(title, id=tab), gr.Row(elem_classes="pv-row"):
+        video = gr.Video(value=video_path(bundle, tab, clip), show_label=False, elem_classes="pv-video")
+        with gr.Column(min_width=260, elem_classes="pv-side"):
+            score = gr.Markdown(score_card(manifest, clip, tab), elem_classes="pv-score")
+            stats = gr.Markdown(stats_card(manifest, clip), elem_classes="pv-stats")
+            gr.Markdown(blurb, elem_classes="pv-note")
     return tab, video, score, stats
 
 
-# Restart both compare videos together (they are separate players, so this is how they line up).
+# Play both compare videos in step from the left one's time, or from the start once it has ended
+# (they are separate players, so this is how they line up).
 PLAY_BOTH = """() => {
   const videos = ["#compare-a video", "#compare-b video"].map((s) => document.querySelector(s)).filter(Boolean);
-  videos.forEach((v) => { v.pause(); v.currentTime = 0; });
+  if (!videos.length) return;
+  const t = videos[0].ended ? 0 : videos[0].currentTime;
+  videos.forEach((v) => { v.pause(); v.currentTime = t; });
   videos.forEach((v) => v.play());
 }"""
 PAUSE_BOTH = """() => {
@@ -208,16 +211,16 @@ def _compare(gr, bundle: Path, tabs: list[str], clip: str) -> tuple:
     titles = [(TABS[t][0], t) for t in tabs]
     left, right = (tabs[0], tabs[-1]) if "foundation" not in tabs else ("foundation", tabs[-1])
     with gr.Tab("Compare", id="compare"):
-        gr.Markdown("Any two tabs side by side on the same clip.")
-        with gr.Row():
-            pick_a = gr.Dropdown(choices=titles, value=left, label="Left")
-            pick_b = gr.Dropdown(choices=titles, value=right, label="Right")
-        with gr.Row():
+        # One slim row: each picker sits over its video, the buttons between them.
+        with gr.Row(elem_classes="pv-controls"):
+            pick = {"choices": titles, "show_label": False, "container": False, "min_width": 200}
+            pick_a = gr.Dropdown(value=left, label="Left", **pick)
+            play = gr.Button("Play both", variant="primary", scale=0, min_width=120)
+            pause = gr.Button("Pause both", scale=0, min_width=120)
+            pick_b = gr.Dropdown(value=right, label="Right", **pick)
+        with gr.Row(elem_classes="pv-compare"):
             video_a = gr.Video(value=video_path(bundle, left, clip), show_label=False, elem_id="compare-a")
             video_b = gr.Video(value=video_path(bundle, right, clip), show_label=False, elem_id="compare-b")
-        with gr.Row():
-            play = gr.Button("Play both from the start", variant="primary")
-            pause = gr.Button("Pause both")
     play.click(None, js=PLAY_BOTH)
     pause.click(None, js=PAUSE_BOTH)
     return pick_a, pick_b, video_a, video_b
@@ -233,9 +236,18 @@ def build(bundle: Path):
     tabs = [t for t in TABS if any(video_path(bundle, t, c) for c in clips)]
     first = clips[0]
 
-    with gr.Blocks(title="PitchView") as app:
-        gr.Markdown(header(manifest))
-        clip = gr.Dropdown(choices=[(clip_label(manifest, c), c) for c in clips], value=first, label="Clip")
+    with gr.Blocks(title="PitchView", fill_width=True) as app:
+        with gr.Row(equal_height=True, elem_id="pv-head"):
+            gr.Markdown(header(manifest), elem_id="pv-title")
+            clip = gr.Dropdown(
+                choices=[(clip_label(manifest, c), c) for c in clips],
+                value=first,
+                label="Clip",
+                show_label=False,
+                container=False,
+                scale=0,
+                min_width=220,
+            )
         with gr.Tabs(selected="full" if "full" in tabs else None):
             widgets = [_tab(gr, bundle, manifest, tab, first) for tab in tabs]
             compare = _compare(gr, bundle, tabs, first) if len(tabs) > 1 else None
@@ -254,5 +266,37 @@ def build(bundle: Path):
             pick_b.change(lambda name, tab: video_path(bundle, tab, name), [clip, pick_b], video_b)
         else:
             clip.change(show, clip, outputs)
-        gr.Markdown(CREDITS)
+        gr.Markdown(CREDITS, elem_id="pv-credits")
     return app
+
+
+# Gradio 6 takes CSS at launch. The page is one screen: the video takes the height left under the
+# header and tabs (PV_CHROME), the side panel the width left over. Gradio 6.30's semi-bold font file
+# holds only 55 glyphs (an "A" but no "G", "S" or "T"), so bold text mixed two fonts; its full bold
+# file is mapped to both weights here.
+PV_CHROME = "200px"
+CSS = f"""
+@font-face {{ font-family: "Source Sans Pro"; font-weight: 600 700; font-style: normal;
+  src: url("static/fonts/SourceSansPro/SourceSansPro-Bold.woff2") format("woff2"); }}
+.gradio-container .main {{ padding-top: 12px; padding-bottom: 12px; }}
+#pv-head {{ align-items: center; }}
+#pv-title p {{ margin: 0; color: var(--body-text-color-subdued); }}
+#pv-title p > strong:first-child {{ font-size: 1.4rem; color: var(--body-text-color); margin-right: 0.6rem; }}
+.pv-row {{ flex-wrap: wrap; align-items: flex-start; }}
+.pv-row > .pv-video {{ flex: 0 1 calc((100vh - {PV_CHROME}) * 16 / 9) !important; min-width: min(100%, 480px) !important; }}
+.pv-row > .pv-side {{ flex: 1 1 260px !important; max-width: 520px; }}
+.pv-score p {{ margin: 0; color: var(--body-text-color-subdued); }}
+.pv-score h1 {{ font-size: 3.2rem; line-height: 1.1; margin: 2px 0 4px; }}
+.pv-stats h4 {{ margin: 18px 0 2px; font-size: 0.8rem; font-weight: 400; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--body-text-color-subdued); }}
+.pv-stats p {{ margin: 0; }}
+.pv-stats p:last-child, .pv-note p, #pv-credits p {{ font-size: 0.8rem; color: var(--body-text-color-subdued); }}
+.pv-stats p:last-child {{ margin-top: 18px; }}
+.pv-controls {{ align-items: center; }}
+.pv-compare video {{ max-height: calc(100vh - {PV_CHROME} - 60px); }}
+"""
+
+
+def serve(bundle: Path, **launch) -> None:
+    """Build the app for a bundle and serve it with the viewer's styling and no Gradio footer."""
+    build(bundle).launch(css=CSS, footer_links=[], **launch)

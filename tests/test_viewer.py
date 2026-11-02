@@ -27,12 +27,12 @@ MANIFEST = {
 
 
 def test_cards_show_the_clip_scores_and_stats():
-    assert "GS-HOTA 66.2" in score_card(MANIFEST, "SNGS-118", "full")
-    assert "Official baseline: 53.6" in score_card(MANIFEST, "SNGS-118", "full")
+    card = score_card(MANIFEST, "SNGS-118", "full")
+    assert "GS-HOTA on this clip" in card and "# 66.2" in card and "Official baseline 53.6" in card
     assert score_card(MANIFEST, "SNGS-121", "full") == ""  # no scores: no card
     stats = stats_card(MANIFEST, "SNGS-118")
-    assert "### Stats for this clip" in stats and "this clip's 30 seconds only, not the whole match" in stats
-    assert "FC St. Gallen 61%" in stats and "B. Stillhart (#10, FC Thun), 27.3 km/h" in stats
+    assert "#### Possession" in stats and "this clip's 30 seconds only, not the whole match" in stats
+    assert "FC St. Gallen 61% · FC Thun 39%" in stats and "B. Stillhart (#10, FC Thun), 27.3 km/h" in stats
     assert "team shape" not in stats.lower() and "m wide" not in stats
     other = stats_card(MANIFEST, "SNGS-121")
     assert "a player (unknown team)" in other and "From this clip only" in other
@@ -78,7 +78,7 @@ def test_space_folder_has_app_readme_viewer_and_bundle(tmp_path):
     out = tmp_path / "space"
     size = make_space(bundle, out, "6.30.0")
     assert (out / "demo" / "videos" / "full" / "SNGS-118.mp4").exists()
-    assert "from viewer import build" in (out / "app.py").read_text()
+    assert "from viewer import serve" in (out / "app.py").read_text()
     assert "def make_space" in (out / "viewer.py").read_text(encoding="utf-8")
     readme = (out / "README.md").read_text(encoding="utf-8")
     assert readme.startswith("---\ntitle: PitchView") and "sdk_version: 6.30.0" in readme

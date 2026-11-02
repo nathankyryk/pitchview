@@ -1189,9 +1189,9 @@ def bundle(clips: list[str], run: str = "sam", box_run: str = "main", split: str
 @app.command()
 def viewer(bundle: Path = Path("demo"), port: int = 7860, share: bool = False) -> None:
     """The demo app (Gradio) on a bundle made by `pitchview bundle`; it runs no model."""
-    from pitchview.viewer import build
+    from pitchview.viewer import serve
 
-    build(bundle).launch(server_port=port, share=share)
+    serve(bundle, server_port=port, share=share)
 
 
 @app.command()
