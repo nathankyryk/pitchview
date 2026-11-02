@@ -31,7 +31,8 @@ def test_cards_show_the_clip_scores_and_stats():
     assert "GS-HOTA on this clip" in card and "# 66.2" in card and "Official baseline 53.6" in card
     assert score_card(MANIFEST, "SNGS-121", "full") == ""  # no scores: no card
     stats = stats_card(MANIFEST, "SNGS-118")
-    assert "#### Possession" in stats and "this clip's 30 seconds only, not the whole match" in stats
+    assert "#### Possession" in stats and "not the whole match" not in stats
+    assert "From this clip's 30 seconds only and only counting the players in view.\\\nPossession:" in stats
     assert "FC St. Gallen 61% · FC Thun 39%" in stats and "B. Stillhart (#10, FC Thun), 27.3 km/h" in stats
     assert "team shape" not in stats.lower() and "m wide" not in stats
     other = stats_card(MANIFEST, "SNGS-121")

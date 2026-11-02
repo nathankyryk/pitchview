@@ -193,7 +193,7 @@ def stats_card(manifest: dict, clip: str) -> str:
     names = {**TEAM_NAMES, **(entry.get("teams") or {})}
     seconds = entry.get("seconds")
     span = f"this clip's {seconds:.0f} seconds" if seconds else "this clip"
-    lines, notes = [], [f"From {span} only, not the whole match, and only the players in view."]
+    lines, notes = [], [f"From {span} only and only counting the players in view."]
     if share := st.get("possession_pct"):
         lines.append("#### Possession\n" + " · ".join(f"{names.get(t, t)} {p:.0f}%" for t, p in share.items()))
         notes.append("Possession: share of the clip each team had the player nearest the ball.")
@@ -208,7 +208,7 @@ def stats_card(manifest: dict, clip: str) -> str:
     if "median_top_speed_kmh" in st:
         lines.append(f"#### Median top speed\n{st['median_top_speed_kmh']:.1f} km/h")
         notes.append("Median top speed: players tracked for 5 s or more.")
-    return "\n\n".join([*lines, " ".join(notes)])
+    return "\n\n".join([*lines, "\\\n".join(notes)])  # one note per line: a backslash is a markdown line break
 
 
 def _tab(gr, bundle: Path, manifest: dict, tab: str, clip: str) -> tuple:
